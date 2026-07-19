@@ -55,3 +55,12 @@ The application uses URL-based pagination (React Router) with the following rout
 - **Responsiveness:** Mobile responsive layout is enforced across all auth and dashboard pages.
 - **Header in Auth Pages:** The auth pages share a common Layout wrapper that includes the site's Header.
 - **Icons:** `lucide-react` is used for UI icons (Eye, EyeOff, etc.).
+
+## Deployment
+
+- **Frontend:** Deployed on AWS Amplify (region: ap-southeast-1).
+- **Custom domain:** https://www.mallucupid.com
+- **Backend:** Supabase With edge functions
+- All secrets store on supabase server side and aws amplify environment variables, Never create a .env file
+
+

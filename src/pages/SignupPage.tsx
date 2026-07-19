@@ -2,6 +2,7 @@ import React, { useState, useEffect } from "react";
 import { motion, AnimatePresence } from "motion/react";
 import { Eye, EyeOff, Mail, Lock, User, ArrowRight, CheckCircle2, XCircle, Loader2, AlertCircle } from "lucide-react";
 import { Link, useNavigate } from "react-router-dom";
+import { supabase } from "../lib/supabase";
 
 export default function SignupPage() {
   const [showPassword, setShowPassword] = useState(false);
@@ -68,17 +69,23 @@ export default function SignupPage() {
       setError("Password must be at least 8 characters long.");
       return;
     }
-
-    setIsLoading(true);
-
-    // Simulate API call for signup
-    setTimeout(() => {
+    (async () => {
+      setIsLoading(true);
+      const { data, error } = await supabase.auth.signUp({
+        email,
+        password,
+        options: {
+          data: { username },
+        },
+      });
       setIsLoading(false);
-      setSuccess("Account created! Redirecting to verification...");
-      setTimeout(() => {
-        navigate("/verify-otp");
-      }, 1500);
-    }, 1500);
+      if (error) {
+        setError(error.message || 'Signup failed');
+        return;
+      }
+      setSuccess('Account created! Check your email to verify.');
+      navigate('/verify-otp');
+    })();
   };
 
   return (

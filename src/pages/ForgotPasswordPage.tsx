@@ -2,6 +2,7 @@ import React, { useState } from "react";
 import { motion, AnimatePresence } from "motion/react";
 import { Mail, ArrowRight, ArrowLeft, Lock, EyeOff, Eye, Loader2, AlertCircle, CheckCircle2 } from "lucide-react";
 import { Link, useNavigate } from "react-router-dom";
+import { supabase } from "../lib/supabase";
 
 export default function ForgotPasswordPage() {
   const [step, setStep] = useState<1 | 2>(1);
@@ -27,17 +28,22 @@ export default function ForgotPasswordPage() {
       return;
     }
     
-    setIsLoading(true);
-    
-    // Simulate API call
-    setTimeout(() => {
+    (async () => {
+      setIsLoading(true);
+      // Supabase will send a password recovery email
+      // @ts-ignore
+      const { error } = await supabase.auth.resetPasswordForEmail(email);
       setIsLoading(false);
-      setSuccess("Reset code sent to your email!");
+      if (error) {
+        setError(error.message || 'Failed to send reset code');
+        return;
+      }
+      setSuccess('Reset code sent to your email!');
       setTimeout(() => {
         setSuccess(null);
         setStep(2);
       }, 1500);
-    }, 1500);
+    })();
   };
 
   const handleResetPassword = (e: React.FormEvent) => {
@@ -55,20 +61,32 @@ export default function ForgotPasswordPage() {
       return;
     }
     
-    setIsLoading(true);
-    
-    // Simulate API call
-    setTimeout(() => {
-      setIsLoading(false);
-      if (otp === "123456") {
-        setSuccess("Password reset successfully! Redirecting to login...");
-        setTimeout(() => {
-          navigate("/login");
-        }, 1500);
-      } else {
-        setError("Invalid reset code. Please try again.");
+    (async () => {
+      setIsLoading(true);
+      // Verify OTP (recovery) and update password
+      const otpCode = otp;
+      const { data, error: verifyError } = await supabase.auth.verifyOtp({
+        token: otpCode,
+        type: 'recovery',
+      });
+      if (verifyError) {
+        setIsLoading(false);
+        setError(verifyError.message || 'Invalid reset code');
+        return;
       }
-    }, 1500);
+      // Now update password using the provided token
+      // @ts-ignore
+      const { error: updateError } = await supabase.auth.updateUser({ password });
+      setIsLoading(false);
+      if (updateError) {
+        setError(updateError.message || 'Failed to update password');
+        return;
+      }
+      setSuccess('Password reset successfully! Redirecting to login...');
+      setTimeout(() => {
+        navigate('/login');
+      }, 1500);
+    })();
   };
 
   return (

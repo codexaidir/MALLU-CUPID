@@ -2,6 +2,7 @@ import React, { useState } from "react";
 import { motion, AnimatePresence } from "motion/react";
 import { Eye, EyeOff, Mail, Lock, ArrowRight, Loader2, AlertCircle, CheckCircle2 } from "lucide-react";
 import { Link, useNavigate } from "react-router-dom";
+import { supabase } from "../lib/supabase";
 
 export default function LoginPage() {
   const [showPassword, setShowPassword] = useState(false);
@@ -27,26 +28,18 @@ export default function LoginPage() {
       return;
     }
 
-    setIsLoading(true);
-
-    // Simulate API call
-    setTimeout(() => {
+    (async () => {
+      setIsLoading(true);
+      const { data, error } = await supabase.auth.signInWithPassword({ email, password });
       setIsLoading(false);
-      // Simulate fake authentication
-      if (email === "creator@example.com" && password === "password123") {
-        setSuccess("Login successful! Redirecting...");
-        setTimeout(() => {
-          navigate("/dashboard");
-        }, 1500);
-      } else if (email !== "creator@example.com") {
-        setSuccess("Login successful! Redirecting...");
-        setTimeout(() => {
-          navigate("/dashboard");
-        }, 1500);
-      } else {
-        setError("Invalid credentials. Please try again.");
+      if (error) {
+        setError(error.message || 'Login failed');
+        return;
       }
-    }, 1500);
+      setSuccess('Login successful! Redirecting...');
+      // data.session is returned but client-side persistence is disabled.
+      navigate('/dashboard');
+    })();
   };
 
   return (
