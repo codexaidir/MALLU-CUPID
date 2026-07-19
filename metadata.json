@@ -1,0 +1,6 @@
+{
+  "name": "MalluCupid",
+  "description": "Empowering digital creators to monetize their content and turn their passion into a career.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
