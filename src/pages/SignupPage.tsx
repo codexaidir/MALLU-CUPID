@@ -2,7 +2,7 @@ import React, { useState, useEffect } from "react";
 import { motion, AnimatePresence } from "motion/react";
 import { Eye, EyeOff, Mail, Lock, User, ArrowRight, CheckCircle2, XCircle, Loader2, AlertCircle } from "lucide-react";
 import { Link, useNavigate } from "react-router-dom";
-import { supabase } from "../lib/supabase";
+import { signup } from "../lib/auth";
 
 export default function SignupPage() {
   const [showPassword, setShowPassword] = useState(false);
@@ -71,20 +71,14 @@ export default function SignupPage() {
     }
     (async () => {
       setIsLoading(true);
-      const { data, error } = await supabase.auth.signUp({
-        email,
-        password,
-        options: {
-          data: { username },
-        },
-      });
+      const response = await signup(email, password, username);
       setIsLoading(false);
-      if (error) {
-        setError(error.message || 'Signup failed');
+      if (response?.error) {
+        setError(response.error || 'Signup failed');
         return;
       }
       setSuccess('Account created! Check your email to verify.');
-      navigate('/verify-otp');
+      navigate('/verify-otp', { replace: true });
     })();
   };
 

@@ -2,7 +2,7 @@ import React, { useState, useEffect } from "react";
 import { motion, AnimatePresence } from "motion/react";
 import { ArrowRight, KeyRound, Loader2, AlertCircle, CheckCircle2 } from "lucide-react";
 import { useNavigate } from "react-router-dom";
-import { supabase } from "../lib/supabase";
+import { verifyOtp } from "../lib/auth";
 
 export default function VerifyOtpPage() {
   const [otp, setOtp] = useState(["", "", "", "", "", ""]);
@@ -48,17 +48,16 @@ export default function VerifyOtpPage() {
 
     const otpCode = otp.join("");
     
-    // Simulate verification
     (async () => {
-      const { data, error } = await supabase.auth.verifyOtp({ token: otpCode, type: 'signup' });
+      const response = await verifyOtp(otpCode);
       setIsLoading(false);
-      if (error) {
-        setError(error.message || 'Invalid verification code');
+      if (response?.error) {
+        setError(response.error || 'Invalid verification code');
         return;
       }
       setSuccess('Verification successful! Redirecting...');
       setTimeout(() => {
-        navigate('/onboarding');
+        navigate('/onboarding', { replace: true });
       }, 1500);
     })();
   };

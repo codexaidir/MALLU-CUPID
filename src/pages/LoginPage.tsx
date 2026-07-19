@@ -2,7 +2,7 @@ import React, { useState } from "react";
 import { motion, AnimatePresence } from "motion/react";
 import { Eye, EyeOff, Mail, Lock, ArrowRight, Loader2, AlertCircle, CheckCircle2 } from "lucide-react";
 import { Link, useNavigate } from "react-router-dom";
-import { supabase } from "../lib/supabase";
+import { login } from "../lib/auth";
 
 export default function LoginPage() {
   const [showPassword, setShowPassword] = useState(false);
@@ -30,15 +30,14 @@ export default function LoginPage() {
 
     (async () => {
       setIsLoading(true);
-      const { data, error } = await supabase.auth.signInWithPassword({ email, password });
+      const response = await login(email, password);
       setIsLoading(false);
-      if (error) {
-        setError(error.message || 'Login failed');
+      if (response?.error) {
+        setError(response.error || 'Login failed');
         return;
       }
       setSuccess('Login successful! Redirecting...');
-      // data.session is returned but client-side persistence is disabled.
-      navigate('/dashboard');
+      navigate('/dashboard', { replace: true });
     })();
   };
 

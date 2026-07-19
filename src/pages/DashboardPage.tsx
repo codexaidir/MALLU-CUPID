@@ -36,6 +36,7 @@ export default function DashboardPage() {
   const [isNewPostMenuOpen, setIsNewPostMenuOpen] = useState(false);
   const navigate = useNavigate();
 
+  const [isEditProfileModalOpen, setIsEditProfileModalOpen] = useState(false);
   const [posts, setPosts] = useState([
     { id: 1, img: "https://images.unsplash.com/photo-1522202176988-66273c2fd55f?w=400&q=80", type: "image", caption: "Beautiful day! ☀️", isPaid: false, price: 0 },
     { id: 2, img: "https://images.unsplash.com/photo-1517841905240-472988babdf9?w=400&q=80", type: "video", caption: "Workout routine part 1 💪 Check it out!", isPaid: true, price: 5 },

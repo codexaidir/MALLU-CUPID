@@ -2,7 +2,7 @@ import React, { useState } from "react";
 import { motion, AnimatePresence } from "motion/react";
 import { Mail, ArrowRight, ArrowLeft, Lock, EyeOff, Eye, Loader2, AlertCircle, CheckCircle2 } from "lucide-react";
 import { Link, useNavigate } from "react-router-dom";
-import { supabase } from "../lib/supabase";
+import { forgotPassword, resetPassword } from "../lib/auth";
 
 export default function ForgotPasswordPage() {
   const [step, setStep] = useState<1 | 2>(1);
@@ -30,12 +30,10 @@ export default function ForgotPasswordPage() {
     
     (async () => {
       setIsLoading(true);
-      // Supabase will send a password recovery email
-      // @ts-ignore
-      const { error } = await supabase.auth.resetPasswordForEmail(email);
+      const response = await forgotPassword(email);
       setIsLoading(false);
-      if (error) {
-        setError(error.message || 'Failed to send reset code');
+      if (response?.error) {
+        setError(response.error || 'Failed to send reset code');
         return;
       }
       setSuccess('Reset code sent to your email!');
@@ -63,28 +61,15 @@ export default function ForgotPasswordPage() {
     
     (async () => {
       setIsLoading(true);
-      // Verify OTP (recovery) and update password
-      const otpCode = otp;
-      const { data, error: verifyError } = await supabase.auth.verifyOtp({
-        token: otpCode,
-        type: 'recovery',
-      });
-      if (verifyError) {
-        setIsLoading(false);
-        setError(verifyError.message || 'Invalid reset code');
-        return;
-      }
-      // Now update password using the provided token
-      // @ts-ignore
-      const { error: updateError } = await supabase.auth.updateUser({ password });
+      const response = await resetPassword(otp, password);
       setIsLoading(false);
-      if (updateError) {
-        setError(updateError.message || 'Failed to update password');
+      if (response?.error) {
+        setError(response.error || 'Failed to reset password');
         return;
       }
       setSuccess('Password reset successfully! Redirecting to login...');
       setTimeout(() => {
-        navigate('/login');
+        navigate('/login', { replace: true });
       }, 1500);
     })();
   };
