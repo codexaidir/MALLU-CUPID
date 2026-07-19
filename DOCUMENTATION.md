@@ -63,4 +63,6 @@ The application uses URL-based pagination (React Router) with the following rout
 - **Backend:** Supabase With edge functions
 - All secrets store on supabase server side and aws amplify environment variables, Never create a .env file
 
+- **Supabase:** linked project `rytulzgsuzgicmpvrrxn`; migrations and edge function template added.
+
 
