@@ -69,6 +69,6 @@ The application uses URL-based pagination (React Router) with the following rout
 
 - Signup now uses OTP: backend stores `email_verifications` and sends 6-digit code via Resend.
 - Verify endpoint creates Supabase user and `profiles` record, then sets HttpOnly session cookies.
-- Auth API is hosted as Supabase edge function; frontend must use `VITE_AUTH_API_URL` pointing to that function.
+- Auth API is hosted as Supabase edge function; frontend must use `VITE_AUTH_API_URL` pointing to the deployed function, e.g. `https://rytulzgsuzgicmpvrrxn.supabase.co/functions/v1/auth`.
 
 

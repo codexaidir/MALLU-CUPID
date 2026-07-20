@@ -11,21 +11,33 @@ if (!SUPABASE_URL || !SERVICE_KEY || !ANON_KEY) {
 }
 
 const buildCookie = (name: string, value: string, maxAge: number) =>
-  `${name}=${encodeURIComponent(value)}; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=${maxAge}`
+  `${name}=${encodeURIComponent(value)}; Path=/; HttpOnly; Secure; SameSite=None; Max-Age=${maxAge}`
 
 const clearCookie = (name: string) =>
-  `${name}=; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=0`
+  `${name}=; Path=/; HttpOnly; Secure; SameSite=None; Max-Age=0`
 
-const jsonResponse = (body: unknown, status = 200, headers: Record<string, string> = {}) => ({
-  status,
-  headers: {
+const jsonResponse = (
+  body: unknown,
+  status = 200,
+  headers: Record<string, string> = {},
+  cookies: string[] = [],
+) => {
+  const responseHeaders = new Headers({
     'Content-Type': 'application/json',
     'Access-Control-Allow-Origin': ORIGIN,
     'Access-Control-Allow-Credentials': 'true',
     ...headers,
-  },
-  body: JSON.stringify(body),
-})
+  })
+
+  for (const cookie of cookies) {
+    responseHeaders.append('Set-Cookie', cookie)
+  }
+
+  return new Response(JSON.stringify(body), {
+    status,
+    headers: responseHeaders,
+  })
+}
 
 const authHeaders = (useService = false) => ({
   'Content-Type': 'application/json',
@@ -331,7 +343,7 @@ serve(async (req) => {
     })
   }
 
-  const url = new URL(req.url)
+  const url = new URL(req.url, `https://${req.headers.get('host') ?? 'localhost'}`)
   const path = url.pathname.replace(/\/+$/, '')
 
   if (path.endsWith('/auth/login') && req.method === 'POST') return handleLogin(req)

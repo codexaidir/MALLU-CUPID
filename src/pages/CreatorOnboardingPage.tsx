@@ -2,6 +2,7 @@ import React, { useState, useRef } from "react";
 import { motion } from "motion/react";
 import { Camera, ArrowRight, User, RefreshCw } from "lucide-react";
 import { useNavigate } from "react-router-dom";
+import { updateProfile } from "../lib/auth";
 
 export default function CreatorOnboardingPage() {
   const navigate = useNavigate();
@@ -45,23 +46,17 @@ export default function CreatorOnboardingPage() {
     fileInputRef.current?.click();
   };
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    (async () => {
-      setIsUploading(true);
-      try {
-        await fetch(`${import.meta.env.VITE_AUTH_API_URL}/auth/profile`, {
-          method: 'POST',
-          credentials: 'include',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ full_name: name, bio, avatar_url: imagePreview }),
-        });
-      } catch (err) {
-        console.error(err);
-      }
+    setIsUploading(true);
+    try {
+      await updateProfile({ full_name: name, bio, avatar_url: imagePreview });
+    } catch (err) {
+      console.error(err);
+    } finally {
       setIsUploading(false);
       navigate('/dashboard');
-    })();
+    }
   };
 
   return (
