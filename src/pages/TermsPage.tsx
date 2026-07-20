@@ -8,7 +8,7 @@ export default function TermsPage() {
     >
       <section>
         <h2 className="text-xl font-semibold text-zinc-900">1. Acceptance of Terms</h2>
-        <p>By using MalluCupid, you agree to these Terms and Conditions and any policies linked here. If you do not agree, you should not use the platform.</p>
+        <p> By accessing or using MalluCupid, you acknowledge that you have read, understood, and agree to be legally bound by these Terms and Conditions, our Privacy Policy, Refund Policy, and all other policies published on the platform. If you do not agree with these Terms, you must immediately discontinue using our services.</p>
       </section>
 
       <section>
