@@ -11,7 +11,7 @@
     "lint": "tsc --noEmit",
     "supabase:link": "supabase link --project-ref rytulzgsuzgicmpvrrxn",
     "supabase:push": "supabase db push",
-    "supabase:deploy-functions": "supabase functions deploy welcome --no-verify",
+    "supabase:deploy-functions": "supabase functions deploy auth welcome --no-verify",
     "supabase:serve-functions": "supabase functions serve"
   },
   "supabase": {

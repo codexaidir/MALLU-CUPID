@@ -50,3 +50,7 @@ export async function resetPassword(token: string, password: string) {
 export async function getSession() {
   return apiGet('/auth/session');
 }
+
+export async function updateProfile(data: { full_name?: string; bio?: string; avatar_url?: string }) {
+  return apiPost('/auth/profile', data);
+}

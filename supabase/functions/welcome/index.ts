@@ -9,16 +9,23 @@ serve(async (req) => {
     const SERVICE_KEY = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY');
     if (!SUPABASE_URL || !SERVICE_KEY) return new Response('Missing env', { status: 500 });
 
-    // Create profile using service role
+    const profile = {
+      id: user.id,
+      username: user.user_metadata?.username || null,
+      full_name: user.user_metadata?.full_name || user.user_metadata?.name || null,
+      bio: user.user_metadata?.bio || null,
+      avatar_url: user.user_metadata?.avatar_url || null,
+    };
+
     const res = await fetch(`${SUPABASE_URL}/rest/v1/profiles`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        'apikey': SERVICE_KEY,
-        'Authorization': `Bearer ${SERVICE_KEY}`,
-        'Prefer': 'return=representation'
+        apikey: SERVICE_KEY,
+        Authorization: `Bearer ${SERVICE_KEY}`,
+        Prefer: 'return=representation',
       },
-      body: JSON.stringify({ id: user.id, username: user.user_metadata?.username || null, full_name: user.user_metadata?.name || null })
+      body: JSON.stringify(profile),
     });
 
     if (!res.ok) {

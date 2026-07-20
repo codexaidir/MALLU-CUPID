@@ -65,4 +65,10 @@ The application uses URL-based pagination (React Router) with the following rout
 
 - **Supabase:** linked project `rytulzgsuzgicmpvrrxn`; migrations and edge function template added.
 
+## Auth updates
+
+- Signup now uses OTP: backend stores `email_verifications` and sends 6-digit code via Resend.
+- Verify endpoint creates Supabase user and `profiles` record, then sets HttpOnly session cookies.
+- Auth API is hosted as Supabase edge function; frontend must use `VITE_AUTH_API_URL` pointing to that function.
+
 

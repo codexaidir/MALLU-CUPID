@@ -47,7 +47,21 @@ export default function CreatorOnboardingPage() {
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    navigate("/dashboard");
+    (async () => {
+      setIsUploading(true);
+      try {
+        await fetch(`${import.meta.env.VITE_AUTH_API_URL}/auth/profile`, {
+          method: 'POST',
+          credentials: 'include',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ full_name: name, bio, avatar_url: imagePreview }),
+        });
+      } catch (err) {
+        console.error(err);
+      }
+      setIsUploading(false);
+      navigate('/dashboard');
+    })();
   };
 
   return (
