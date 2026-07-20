@@ -1,13 +1,12 @@
 (async function(){
   const path = await import('path');
   const { createClient } = await import('@supabase/supabase-js');
-  const { createRequire } = await import('module');
-  const require = createRequire(import.meta.url);
-  const mod = require(path.resolve(process.cwd(), 'amplify/backend/function/authApi/src/index.js'));
-  const handler = mod.handler || (mod.default && mod.default.handler);
-
   const SUPABASE_URL = process.env.SUPABASE_URL || process.env.VITE_SUPABASE_URL;
   const SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
+
+  const handler = null
+  console.error('Test harness currently only supports Supabase function HTTP calls, not Amplify auth handler.')
+  process.exit(1)
   if (!SUPABASE_URL || !SERVICE_ROLE_KEY) {
     console.error('Missing SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY in env');
     process.exit(1);
