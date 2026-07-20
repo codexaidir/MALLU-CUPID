@@ -17,6 +17,10 @@ import VerificationPage from "./pages/VerificationPage";
 import CreatePostPage from "./pages/CreatePostPage";
 import EditProfilePage from "./pages/EditProfilePage";
 import CreatorOnboardingPage from "./pages/CreatorOnboardingPage";
+import TermsPage from "./pages/TermsPage";
+import PrivacyPolicyPage from "./pages/PrivacyPolicyPage";
+import RefundPolicyPage from "./pages/RefundPolicyPage";
+import ContactUsPage from "./pages/ContactUsPage";
 
 function LandingPage() {
   return (
@@ -56,6 +60,10 @@ export default function App() {
             <Route path="/verify-otp" element={<AuthLayout><VerifyOtpPage /></AuthLayout>} />
             <Route path="/forgot-password" element={<AuthLayout><ForgotPasswordPage /></AuthLayout>} />
             <Route path="/onboarding" element={<AuthLayout><CreatorOnboardingPage /></AuthLayout>} />
+            <Route path="/terms-and-conditions" element={<AuthLayout><TermsPage /></AuthLayout>} />
+            <Route path="/privacy-policy" element={<AuthLayout><PrivacyPolicyPage /></AuthLayout>} />
+            <Route path="/refund-policy" element={<AuthLayout><RefundPolicyPage /></AuthLayout>} />
+            <Route path="/contact-us" element={<AuthLayout><ContactUsPage /></AuthLayout>} />
             
             <Route path="/dashboard" element={<ProtectedRoute><DashboardPage /></ProtectedRoute>} />
             <Route path="/edit-profile" element={<ProtectedRoute><EditProfilePage /></ProtectedRoute>} />
