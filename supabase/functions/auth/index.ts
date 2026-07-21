@@ -589,6 +589,90 @@ const decoratePosts = async (posts: Array<Record<string, unknown>>) => {
   })
 }
 
+/**
+ * Guest endpoint for public creator pages (/<username><5-digit serial>).
+ * No auth required. Paid posts never expose media URLs to guests — only a
+ * locked flag and price.
+ */
+const handlePublicProfile = async (req: Request, url: URL) => {
+  const origin = req.headers.get('origin')
+  const slug = (url.searchParams.get('slug') || '').trim().toLowerCase()
+
+  const match = slug.match(/^(.{1,60}?)(\d{5})$/)
+  if (!match) return jsonResponse({ error: 'Creator not found' }, 404, {}, [], origin)
+  const [, usernamePart, serialStr] = match
+  const serial = Number(serialStr)
+
+  // Serial is the unique key; the username prefix must match exactly
+  const profileRes = await fetch(
+    `${SUPABASE_URL}/rest/v1/profiles?public_serial=eq.${serial}&select=id,username,full_name,bio,avatar_url,public_serial&limit=1`,
+    { headers: { ...authHeaders(true) } },
+  )
+  if (!profileRes.ok) return jsonResponse({ error: 'Failed to load creator' }, 500, {}, [], origin)
+  const profileRows = await profileRes.json().catch(() => [])
+  const profile = Array.isArray(profileRows) && profileRows.length ? profileRows[0] : null
+  if (!profile || String(profile.username).toLowerCase() !== usernamePart) {
+    return jsonResponse({ error: 'Creator not found' }, 404, {}, [], origin)
+  }
+
+  const countHeaders = { ...authHeaders(true), Prefer: 'count=exact', Range: '0-0' }
+  const [postsRes, followersRes, postCountRes] = await Promise.all([
+    fetch(
+      `${SUPABASE_URL}/rest/v1/posts?creator_id=eq.${profile.id}&select=public_id,media_type,media_paths,is_paid,price,created_at&order=created_at.desc&limit=60`,
+      { headers: { ...authHeaders(true) } },
+    ),
+    fetch(`${SUPABASE_URL}/rest/v1/follows?following_id=eq.${profile.id}&select=follower_id`, {
+      method: 'HEAD',
+      headers: countHeaders,
+    }),
+    fetch(`${SUPABASE_URL}/rest/v1/posts?creator_id=eq.${profile.id}&select=id`, {
+      method: 'HEAD',
+      headers: countHeaders,
+    }),
+  ])
+
+  const countFrom = (res: Response) => {
+    const total = (res.headers.get('content-range') || '').split('/')[1]
+    return total && total !== '*' ? Number(total) || 0 : 0
+  }
+
+  const postRows = postsRes.ok ? await postsRes.json().catch(() => []) : []
+  const posts = Array.isArray(postRows) ? postRows : []
+
+  // Sign only free-post previews (first media of each); paid stays locked
+  const freePaths = posts
+    .filter((p) => p.is_paid !== true && Array.isArray(p.media_paths) && p.media_paths.length)
+    .map((p) => p.media_paths[0] as string)
+  const signed = await signMediaPaths(freePaths)
+
+  const publicPosts = posts.map((p) => {
+    const paths = Array.isArray(p.media_paths) ? p.media_paths as string[] : []
+    return {
+      public_id: p.public_id,
+      media_type: p.media_type,
+      is_paid: p.is_paid === true,
+      price: p.is_paid === true ? p.price : 0,
+      media_url: p.is_paid === true ? '' : (signed[paths[0]] || ''),
+      media_count: paths.length,
+    }
+  })
+
+  return jsonResponse({
+    profile: {
+      username: profile.username,
+      full_name: profile.full_name || '',
+      avatar_url: profile.avatar_url || '',
+      bio: profile.bio || '',
+      serial: String(profile.public_serial).padStart(5, '0'),
+    },
+    stats: {
+      posts: postCountRes.ok ? countFrom(postCountRes) : posts.length,
+      followers: followersRes.ok ? countFrom(followersRes) : 0,
+    },
+    posts: publicPosts,
+  }, 200, {}, [], origin)
+}
+
 const handlePostUploadUrls = async (req: Request) => {
   const origin = req.headers.get('origin')
   const user = await requireUser(req)
@@ -2122,6 +2206,7 @@ serve(async (req) => {
   if (isRoute('post-report') && req.method === 'POST') return handleReportPost(req)
   if (isRoute('post-checkout') && req.method === 'POST') return handlePostCheckout(req)
   if (isRoute('post-verify-payment') && req.method === 'POST') return handleVerifyPostPayment(req)
+  if (isRoute('public-profile') && req.method === 'GET') return handlePublicProfile(req, url)
   if (isRoute('notifications') && req.method === 'GET') return handleGetNotifications(req)
   if (isRoute('notifications-read') && req.method === 'POST') return handleMarkNotificationsRead(req)
   if (isRoute('conversations') && req.method === 'GET') return handleGetConversations(req)

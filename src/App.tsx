@@ -1,5 +1,5 @@
 import React from "react";
-import { BrowserRouter, Routes, Route, Navigate, useLocation } from "react-router-dom";
+import { BrowserRouter, Routes, Route, Navigate, useLocation, useParams } from "react-router-dom";
 import { Header } from "./components/Header";
 import { Hero } from "./components/Hero";
 import { HowItWorks } from "./components/HowItWorks";
@@ -30,6 +30,7 @@ import TermsPage from "./pages/TermsPage";
 import PrivacyPolicyPage from "./pages/PrivacyPolicyPage";
 import RefundPolicyPage from "./pages/RefundPolicyPage";
 import ContactUsPage from "./pages/ContactUsPage";
+import PublicProfilePage from "./pages/PublicProfilePage";
 
 function LandingPage() {
   return (
@@ -79,6 +80,22 @@ function LegacyRedirect({ page = "" }: { page?: string }) {
   return <Navigate to={`/${username}${page ? `/${page}` : ""}${location.search}`} replace />;
 }
 
+/**
+ * Distinguishes public creator pages (/<username><5-digit serial>, e.g.
+ * /founder00151) from the logged-in creator app (/<username>). A slug ending
+ * in exactly 5 digits routes to the public page — unless it is the logged-in
+ * user's own username, which keeps their dashboard working even if their
+ * username happens to end in digits.
+ */
+function UsernameRouteSwitch() {
+  const { username: slug } = useParams<{ username: string }>();
+  const { user } = useAuth();
+  const ownUsername = user?.user_metadata?.username;
+  const isPublicSlug = /^.+\d{5}$/.test(slug || "") && slug !== ownUsername;
+  if (isPublicSlug) return <PublicProfilePage />;
+  return <CreatorLayout />;
+}
+
 export default function App() {
   return (
     <BrowserRouter>
@@ -103,8 +120,9 @@ export default function App() {
             <Route path="/create-post" element={<LegacyRedirect page="create-post" />} />
             <Route path="/verification" element={<LegacyRedirect page="verification" />} />
 
-            {/* Username-based creator routes with persistent mobile header + navbar */}
-            <Route path="/:username" element={<CreatorLayout />}>
+            {/* Username-based creator routes with persistent mobile header + navbar.
+                Slugs ending in a 5-digit serial render the public creator page instead. */}
+            <Route path="/:username" element={<UsernameRouteSwitch />}>
               <Route index element={<DashboardPage />} />
               <Route path="edit-profile" element={<EditProfilePage />} />
               <Route path="create-post" element={<CreatePostPage />} />

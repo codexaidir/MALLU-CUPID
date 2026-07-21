@@ -305,6 +305,32 @@ export async function getConversations(): Promise<{ conversations?: Conversation
   return apiGet('/conversations');
 }
 
+export interface PublicProfilePost {
+  public_id: string;
+  media_type: 'image' | 'video';
+  is_paid: boolean;
+  price: number;
+  media_url: string;
+  media_count: number;
+}
+
+export interface PublicProfileData {
+  profile: {
+    username: string;
+    full_name: string;
+    avatar_url: string;
+    bio: string;
+    serial: string;
+  };
+  stats: { posts: number; followers: number };
+  posts: PublicProfilePost[];
+}
+
+/** Guest endpoint: no auth required. Slug is <username><5-digit serial>. */
+export async function getPublicProfile(slug: string): Promise<Partial<PublicProfileData> & { error?: string }> {
+  return apiGet(`/public-profile?slug=${encodeURIComponent(slug)}`);
+}
+
 export interface NotificationItem {
   id: string;
   type: 'like' | 'purchase' | 'request' | 'accept';
