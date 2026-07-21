@@ -5,10 +5,10 @@ const SERVICE_ROLE_KEY = Deno.env.get('AUTH_SERVICE_ROLE_KEY') || Deno.env.get('
 const ANON_KEY = Deno.env.get('AUTH_ANON_KEY') || Deno.env.get('SUPABASE_ANON_KEY') || Deno.env.get('AUTH_PUBLISHABLE_KEYS') || Deno.env.get('SUPABASE_PUBLISHABLE_KEYS')
 const RESEND_API_KEY = Deno.env.get('AUTH_RESEND_API_KEY') || Deno.env.get('RESEND_API_KEY')
 const AUTH_EMAIL_FROM = Deno.env.get('AUTH_EMAIL_FROM') || 'welcome@mallucupid.com'
-const PUBLIC_APP_URL = (Deno.env.get('AUTH_PUBLIC_APP_URL') || ALLOWED_CORS_ORIGINS[0] || 'https://www.mallucupid.com').replace(/\/$/, '')
-const LOGO_URL = `${PUBLIC_APP_URL}/mallucupid-icon.svg`
 const AUTH_CORS_ORIGIN = Deno.env.get('AUTH_CORS_ORIGIN') || 'https://www.mallucupid.com'
 const ALLOWED_CORS_ORIGINS = AUTH_CORS_ORIGIN.split(',').map((origin) => origin.trim()).filter(Boolean)
+const PUBLIC_APP_URL = (Deno.env.get('AUTH_PUBLIC_APP_URL') || ALLOWED_CORS_ORIGINS[0] || 'https://www.mallucupid.com').replace(/\/$/, '')
+const LOGO_URL = `${PUBLIC_APP_URL}/mallucupid-icon.svg`
 
 if (!SUPABASE_URL || !SERVICE_ROLE_KEY || !ANON_KEY) {
   throw new Error('Missing SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, or SUPABASE_ANON_KEY')
