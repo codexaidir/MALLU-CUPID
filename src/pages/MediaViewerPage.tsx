@@ -10,6 +10,8 @@ import {
   type PostDetail,
 } from "../lib/auth";
 import { loadRazorpay, type RazorpaySuccess } from "../lib/razorpay";
+import { useAuth } from "../lib/useAuth";
+import { CaptureShield, SecureImage, SecureVideo, useCaptureDeterrent } from "../components/SecureMedia";
 
 const formatTime = (seconds: number) => {
   if (!Number.isFinite(seconds)) return "0:00";
@@ -21,6 +23,9 @@ const formatTime = (seconds: number) => {
 export default function MediaViewerPage() {
   const { username, postId } = useParams<{ username: string; postId: string }>();
   const navigate = useNavigate();
+  const { user } = useAuth();
+  const obscured = useCaptureDeterrent();
+  const watermark = user?.email || user?.id || "MalluCupid";
   const base = username ? `/${username}` : "";
   const goBack = () => username ? navigate(base) : navigate(-1);
 
@@ -181,7 +186,10 @@ export default function MediaViewerPage() {
   const showCarousel = post?.media_type === "image" && mediaUrls.length > 1;
 
   return (
-    <div className="fixed inset-0 z-[110] bg-black flex flex-col">
+    <div
+      className="fixed inset-0 z-[110] bg-black flex flex-col"
+      onContextMenu={(e) => e.preventDefault()}
+    >
       {/* Top bar */}
       <div className="absolute top-0 left-0 right-0 z-30 flex items-center justify-between px-3 py-3 bg-gradient-to-b from-black/70 to-transparent">
         <div className="flex items-center gap-3 min-w-0">
@@ -315,11 +323,11 @@ export default function MediaViewerPage() {
           </div>
         ) : post && post.media_type === "image" ? (
           <>
-            <img
+            <SecureImage
               src={mediaUrls[slide]}
               alt={post.caption || "Post"}
-              className="max-w-full max-h-full object-contain select-none"
-              draggable={false}
+              watermark={watermark}
+              className="max-w-full max-h-full object-contain"
             />
             {showCarousel && (
               <>
@@ -357,9 +365,10 @@ export default function MediaViewerPage() {
           </>
         ) : post && post.media_type === "video" ? (
           <div className="relative w-full h-full flex items-center justify-center" onClick={togglePlay}>
-            <video
+            <SecureVideo
               ref={videoRef}
               src={mediaUrls[0]}
+              watermark={watermark}
               className="max-w-full max-h-full object-contain"
               playsInline
               autoPlay
@@ -502,6 +511,7 @@ export default function MediaViewerPage() {
           </div>
         )}
       </AnimatePresence>
+      <CaptureShield watermark={watermark} active={obscured && Boolean(post?.has_access)} />
     </div>
   );
 }

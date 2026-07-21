@@ -874,6 +874,15 @@ const POST_IMAGE_TYPES = ['image/jpeg', 'image/jpg', 'image/png']
 const MAX_IMAGE_SIZE = 50 * 1024 * 1024
 const MAX_VIDEO_SIZE = 500 * 1024 * 1024
 const MAX_IMAGES_PER_POST = 15
+const MEDIA_TTL_SECONDS = 90
+const VIEW_ONCE_TTL_SECONDS = 20
+const AUTH_FN_BASE = `${SUPABASE_URL}/functions/v1/auth`
+
+const securePostMediaUrl = (publicId: string, index: number) =>
+  `${AUTH_FN_BASE}/secure-media?post=${encodeURIComponent(publicId)}&i=${index}`
+
+const secureChatMediaUrl = (messageId: string) =>
+  `${AUTH_FN_BASE}/secure-media?message=${encodeURIComponent(messageId)}`
 
 const generatePostPublicId = () => {
   const alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789'
@@ -889,12 +898,12 @@ const mediaExtension = (contentType: string) => {
   return subtype.split(';')[0].replace(/[^a-z0-9]/gi, '').slice(0, 8) || 'bin'
 }
 
-const signMediaPaths = async (paths: string[]): Promise<Record<string, string>> => {
+const signMediaPaths = async (paths: string[], expiresIn = MEDIA_TTL_SECONDS): Promise<Record<string, string>> => {
   if (!paths.length) return {}
   const res = await fetch(`${SUPABASE_URL}/storage/v1/object/sign/${POST_MEDIA_BUCKET}`, {
     method: 'POST',
     headers: { ...authHeaders(true) },
-    body: JSON.stringify({ expiresIn: 3600, paths }),
+    body: JSON.stringify({ expiresIn, paths }),
   })
   if (!res.ok) {
     console.error('Failed to sign media paths:', await res.text().catch(() => ''))
@@ -909,11 +918,12 @@ const signMediaPaths = async (paths: string[]): Promise<Record<string, string>> 
 }
 
 const decoratePosts = async (posts: Array<Record<string, unknown>>) => {
-  const allPaths = posts.flatMap((post) => (Array.isArray(post.media_paths) ? post.media_paths as string[] : []))
-  const signed = await signMediaPaths(allPaths)
+  // Never expose storage paths or long-lived CDN URLs. Clients only receive
+  // auth-gated secure-media endpoints; access is re-checked on every request.
   return posts.map((post) => {
     const paths = Array.isArray(post.media_paths) ? post.media_paths as string[] : []
-    const mediaUrls = paths.map((path) => signed[path]).filter(Boolean)
+    const publicId = String(post.public_id || '')
+    const mediaUrls = paths.map((_, index) => securePostMediaUrl(publicId, index))
     return {
       id: post.id,
       public_id: post.public_id,
@@ -982,20 +992,17 @@ const handlePublicProfile = async (req: Request, url: URL) => {
   const postRows = postsRes.ok ? await postsRes.json().catch(() => []) : []
   const posts = Array.isArray(postRows) ? postRows : []
 
-  // Sign only free-post previews (first media of each); paid stays locked
-  const freePaths = posts
-    .filter((p) => p.is_paid !== true && Array.isArray(p.media_paths) && p.media_paths.length)
-    .map((p) => p.media_paths[0] as string)
-  const signed = await signMediaPaths(freePaths)
-
+  // Guests never receive playable media. Authenticated viewers only get
+  // auth-gated secure-media URLs for free posts. Paid tiles stay locked here.
   const publicPosts = posts.map((p) => {
     const paths = Array.isArray(p.media_paths) ? p.media_paths as string[] : []
+    const canPreview = Boolean(viewer?.id) && p.is_paid !== true
     return {
       public_id: p.public_id,
       media_type: p.media_type,
       is_paid: p.is_paid === true,
       price: p.is_paid === true ? p.price : 0,
-      media_url: p.is_paid === true ? '' : (signed[paths[0]] || ''),
+      media_url: canPreview ? securePostMediaUrl(String(p.public_id), 0) : '',
       media_count: paths.length,
       like_count: Number(p.like_count) || 0,
       view_count: Number(p.view_count) || 0,
@@ -1608,6 +1615,57 @@ const hasPaidForPost = async (postId: string, userId: string) => {
   return Array.isArray(rows) && rows.length > 0
 }
 
+const handleSecureMedia = async (req: Request, url: URL) => {
+  const origin = req.headers.get('origin')
+  const user = await requireUser(req)
+  if (!user) return jsonResponse({ error: 'Unauthorized' }, 401, {}, [], origin)
+
+  const postPublicId = url.searchParams.get('post') || ''
+  const messageId = url.searchParams.get('message') || ''
+  const index = Math.max(0, Number(url.searchParams.get('i') || '0') || 0)
+  let target = ''
+
+  if (postPublicId) {
+    const post = await fetchPostByPublicId(postPublicId)
+    if (!post) return jsonResponse({ error: 'Not found' }, 404, {}, [], origin)
+    const hasAccess = post.creator_id === user.id || post.is_paid !== true || await hasPaidForPost(post.id, user.id)
+    if (!hasAccess) return jsonResponse({ error: 'Forbidden' }, 403, {}, [], origin)
+    const paths = Array.isArray(post.media_paths) ? post.media_paths as string[] : []
+    const path = paths[index]
+    if (!path) return jsonResponse({ error: 'Not found' }, 404, {}, [], origin)
+    const signed = await signMediaPaths([path], MEDIA_TTL_SECONDS)
+    target = signed[path] || ''
+  } else if (messageId && /^[0-9a-f-]{36}$/i.test(messageId)) {
+    const res = await fetch(`${SUPABASE_URL}/rest/v1/messages?id=eq.${messageId}&select=*&limit=1`, {
+      headers: { ...authHeaders(true) },
+    })
+    const rows = res.ok ? await res.json().catch(() => []) : []
+    const msg = Array.isArray(rows) && rows.length ? rows[0] : null
+    if (!msg?.media_path) return jsonResponse({ error: 'Not found' }, 404, {}, [], origin)
+    if (msg.is_once) return jsonResponse({ error: 'Use view-once endpoint' }, 403, {}, [], origin)
+    if (msg.deleted_for_all) return jsonResponse({ error: 'Not found' }, 404, {}, [], origin)
+    const convo = await getConversationForUser(String(msg.conversation_id), user.id)
+    if (!convo) return jsonResponse({ error: 'Forbidden' }, 403, {}, [], origin)
+    target = await signChatPath(String(msg.media_path), MEDIA_TTL_SECONDS)
+  } else {
+    return jsonResponse({ error: 'Bad request' }, 400, {}, [], origin)
+  }
+
+  if (!target) return jsonResponse({ error: 'Unavailable' }, 500, {}, [], origin)
+
+  // 302 after auth/access checks. Direct storage URLs are short-lived and never
+  // issued without a prior membership/purchase verification on this endpoint.
+  return new Response(null, {
+    status: 302,
+    headers: {
+      Location: target,
+      'Cache-Control': 'no-store, no-cache, must-revalidate, private',
+      'Referrer-Policy': 'no-referrer',
+      ...getCorsHeaders(origin),
+    },
+  })
+}
+
 const handleGetPost = async (req: Request, url: URL) => {
   const origin = req.headers.get('origin')
   const user = await requireUser(req)
@@ -1641,11 +1699,11 @@ const handleGetPost = async (req: Request, url: URL) => {
   const likedByMe = Array.isArray(likedRows) && likedRows.length > 0
 
   const paths = Array.isArray(post.media_paths) ? post.media_paths as string[] : []
-  let mediaUrls: string[] = []
-  if (hasAccess) {
-    const signed = await signMediaPaths(paths)
-    mediaUrls = paths.map((path) => signed[path]).filter(Boolean)
-  }
+  // Only issue auth-gated URLs after the backend access check. Storage paths
+  // are never returned to the client.
+  const mediaUrls = hasAccess
+    ? paths.map((_, index) => securePostMediaUrl(String(post.public_id), index))
+    : []
 
   return jsonResponse({
     post: {
@@ -2105,7 +2163,7 @@ const handlePostPaymentStatus = async (req: Request, url: URL) => {
 const CHAT_MEDIA_BUCKET = 'chat-media'
 const MAX_CHAT_MEDIA_SIZE = 100 * 1024 * 1024
 
-const signChatPath = async (path: string, expiresIn = 3600): Promise<string> => {
+const signChatPath = async (path: string, expiresIn = MEDIA_TTL_SECONDS): Promise<string> => {
   const res = await fetch(`${SUPABASE_URL}/storage/v1/object/sign/${CHAT_MEDIA_BUCKET}/${path}`, {
     method: 'POST',
     headers: { ...authHeaders(true) },
@@ -2345,7 +2403,8 @@ const decorateMessage = async (msg: Record<string, unknown>, userId: string) => 
       // View-once media is never included inline; the recipient must call /message-view-once
       onceState = msg.viewed_at ? 'opened' : (isMine ? 'sent' : 'available')
     } else {
-      mediaUrl = await signChatPath(msg.media_path as string)
+      // Auth-gated endpoint re-checks conversation membership before signing.
+      mediaUrl = secureChatMediaUrl(String(msg.id))
     }
   }
   return {
@@ -2547,7 +2606,7 @@ const handleViewOnceMessage = async (req: Request) => {
     return jsonResponse({ error: 'This media has already been viewed' }, 410, {}, [], origin)
   }
 
-  const url = await signChatPath(msg.media_path, 120)
+  const url = await signChatPath(msg.media_path, VIEW_ONCE_TTL_SECONDS)
   if (!url) return jsonResponse({ error: 'Failed to load media' }, 500, {}, [], origin)
   return jsonResponse({ media_url: url, media_type: msg.media_type }, 200, {}, [], origin)
 }
@@ -2797,6 +2856,7 @@ const routeRequest = async (req: Request) => {
   if (isRoute('support-tickets') && req.method === 'GET') return handleGetSupportTickets(req)
   if (isRoute('support-tickets') && req.method === 'POST') return handleCreateSupportTicket(req)
   if (isRoute('post') && req.method === 'GET') return handleGetPost(req, url)
+  if (isRoute('secure-media') && req.method === 'GET') return handleSecureMedia(req, url)
   if (isRoute('post-like') && req.method === 'POST') return handleTogglePostLike(req)
   if (isRoute('post-update') && req.method === 'POST') return handleUpdatePost(req)
   if (isRoute('post-delete') && req.method === 'POST') return handleDeletePost(req)

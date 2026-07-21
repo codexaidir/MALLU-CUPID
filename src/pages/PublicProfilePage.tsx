@@ -260,7 +260,13 @@ export default function PublicProfilePage() {
       setActionError(response.error);
       return;
     }
-    if (response.conversation_id) navigate(`/user-chat/${response.conversation_id}`);
+    if (response.conversation_id) {
+      // Open the exact chat page (consumer route). Real messages use the
+      // conversations/messages APIs — no local mock thread.
+      navigate(`/user-chat/${response.conversation_id}`, { replace: false });
+    } else {
+      setActionError("Could not open chat. Please try again.");
+    }
   };
 
   const openPost = async (post: PublicProfilePost) => {
@@ -389,8 +395,10 @@ export default function PublicProfilePage() {
             </button>
           </div>
           <div className="h-[238px] bg-zinc-900 overflow-hidden">
-            {hero ? (
-              <img src={hero.media_url} alt="" className="w-full h-full object-cover" />
+            {hero?.media_url ? (
+              <img src={hero.media_url} alt="" className="w-full h-full object-cover pointer-events-none" draggable={false} onContextMenu={(e) => e.preventDefault()} />
+            ) : data?.profile.avatar_url ? (
+              <img src={data.profile.avatar_url} alt="" className="w-full h-full object-cover opacity-80 pointer-events-none" draggable={false} />
             ) : (
               <div className="w-full h-full bg-gradient-to-br from-zinc-800 via-rose-950 to-zinc-950" />
             )}
@@ -498,11 +506,17 @@ export default function PublicProfilePage() {
                             <div className="w-12 h-12 rounded-full bg-white flex items-center justify-center">
                               <LockKeyhole className="w-6 h-6 text-zinc-900" />
                             </div>
-                            <strong className="mt-4 text-sm">Exclusive Content</strong>
-                            <span className="mt-1 text-xs text-zinc-300">Unlock to view</span>
-                            <span className="mt-4 bg-white text-zinc-900 rounded-full px-4 py-2 text-xs font-bold">
-                              Unlock for ₹{post.price}
+                            <strong className="mt-4 text-sm">
+                              {post.is_paid ? "Exclusive Content" : "Login to view"}
+                            </strong>
+                            <span className="mt-1 text-xs text-zinc-300">
+                              {post.is_paid ? "Unlock to view" : "Sign in required"}
                             </span>
+                            {post.is_paid ? (
+                              <span className="mt-4 bg-white text-zinc-900 rounded-full px-4 py-2 text-xs font-bold">
+                                Unlock for ₹{post.price}
+                              </span>
+                            ) : null}
                           </div>
                         ) : post.media_type === "video" ? (
                           <>

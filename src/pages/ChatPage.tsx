@@ -11,6 +11,8 @@ import {
   REPORT_REASONS,
   type ChatConversation, type ChatMessage,
 } from "../lib/auth";
+import { useAuth } from "../lib/useAuth";
+import { CaptureShield, SecureImage, SecureVideo, useCaptureDeterrent } from "../components/SecureMedia";
 
 const EMOJIS = [
   '😀', '😂', '🤣', '😊', '😍', '😘', '😜', '🤗', '🤩', '😎',
@@ -35,6 +37,9 @@ const dayLabel = (iso: string) => {
 export default function ChatPage() {
   const { username, conversationId } = useParams<{ username: string; conversationId: string }>();
   const navigate = useNavigate();
+  const { user } = useAuth();
+  const obscured = useCaptureDeterrent();
+  const watermark = user?.email || user?.id || "MalluCupid";
   const inboxPath = username ? `/${username}/inbox` : "/user-inbox";
   const goBack = () => navigate(inboxPath);
 
@@ -83,11 +88,14 @@ export default function ChatPage() {
       setConversation(response.conversation);
       setMessages(response.messages || []);
       setLoadError("");
+    } else if (response.error && /unauthorized|login/i.test(response.error)) {
+      navigate(`/userlogin?redirect=${encodeURIComponent(username ? `${username}/chat/${conversationId}` : `user-chat/${conversationId}`)}`, { replace: true });
+      return;
     } else if (initial) {
       setLoadError(response.error || "Failed to load chat");
     }
     if (initial) setIsLoading(false);
-  }, [conversationId]);
+  }, [conversationId, navigate, username]);
 
   useEffect(() => {
     load(true);
@@ -441,27 +449,28 @@ export default function ChatPage() {
                           </button>
                         ) : msg.media_type && msg.media_url ? (
                           msg.media_type === 'video' ? (
-                            <video
+                            <SecureVideo
                               src={msg.media_url}
+                              watermark={watermark}
                               className="rounded-xl max-w-full w-56 my-1 bg-black"
                               controls
-                              controlsList="nodownload noplaybackrate"
-                              disablePictureInPicture
-                              playsInline
-                              onContextMenu={blockMedia}
                             />
                           ) : (
-                            <img
-                              src={msg.media_url}
-                              alt="attachment"
-                              draggable={false}
-                              onContextMenu={blockMedia}
+                            <button
+                              type="button"
                               onClick={(e) => {
                                 e.stopPropagation();
                                 if (!selectionMode) setMediaView({ url: msg.media_url, kind: 'image', once: false });
                               }}
-                              className="rounded-xl max-w-full w-56 my-1 cursor-pointer select-none"
-                            />
+                              className="block"
+                            >
+                              <SecureImage
+                                src={msg.media_url}
+                                alt="attachment"
+                                watermark={watermark}
+                                className="rounded-xl max-w-full w-56 my-1 cursor-pointer"
+                              />
+                            </button>
                           )
                         ) : null}
                         {msg.body && <p className="text-sm whitespace-pre-wrap break-words">{msg.body}</p>}
@@ -627,28 +636,25 @@ export default function ChatPage() {
               </span>
             )}
             {mediaView.kind === 'video' ? (
-              <video
+              <SecureVideo
                 src={mediaView.url}
+                watermark={watermark}
                 className="max-w-full max-h-full"
                 autoPlay
                 controls
-                controlsList="nodownload noplaybackrate"
-                disablePictureInPicture
-                playsInline
-                onContextMenu={blockMedia}
               />
             ) : (
-              <img
+              <SecureImage
                 src={mediaView.url}
                 alt="media"
-                draggable={false}
-                onContextMenu={blockMedia}
-                className="max-w-full max-h-full object-contain select-none"
+                watermark={watermark}
+                className="max-w-full max-h-full object-contain"
               />
             )}
           </motion.div>
         )}
       </AnimatePresence>
+      <CaptureShield watermark={watermark} active={obscured} />
 
       {/* Delete selected messages modal */}
       <AnimatePresence>
