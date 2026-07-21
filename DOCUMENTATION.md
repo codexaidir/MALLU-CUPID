@@ -40,13 +40,13 @@ The application uses URL-based pagination (React Router) with the following rout
   - Sidebar contains links for Dashboard, Notifications, Wallet, Verification, and Sign Out.
   - Sign Out button triggers a confirmation dialog box.
   - Replaced welcome message with an Instagram-like profile header.
-  - Profile header includes circular profile image, username, verification badge, edit/share buttons, and a prominent 'New Post' button.
+  - Profile header includes circular profile image, username, verification badge, and edit/share buttons.
   - Share Profile button opens a modal to copy the profile URL to the clipboard.
   - Displays post count and follower count.
   - Shows display name and bio below stats.
   - Implemented an Instagram-like gallery tab bar (Grid, Video).
   - Replaced the placeholder with a responsive 3-column media grid supporting images and videos (indicated by a play icon) and hover states.
-  - Gallery posts have edit/delete options inside a hover-reveal dropdown menu.
+  - Gallery renders database posts only; empty database shows an empty state.
 
 ## Configuration & Architecture
 
@@ -84,4 +84,9 @@ The application uses URL-based pagination (React Router) with the following rout
 - `GET /profile` returns current user's profile (username auto-fetched from signup — read-only on onboarding).
 - `POST /profile` requires `full_name` and `bio` (mandatory, bio <=400). Optional avatar via `avatar_base64` + `avatar_content_type`; uploaded to `avatars/{userId}/avatar.{ext}` (service role, upsert) and public URL saved to `avatar_url`. Existing `avatar_url` string also accepted.
 - Onboarding page auto-fetches username, prefills existing values, uploads image to storage (not base64 in DB), enforces name+bio.
+- Migration `004` adds profile fields (`location`, social URLs, gender, privacy), `follows`, and `posts`; applied remotely with RLS.
+- `/edit-profile` loads/saves Supabase data and avatar storage only; no localStorage or mock profile values.
+- `GET /profile` returns profile, latest posts, and exact DB counts for posts/followers/following.
+- Dashboard profile, avatar, bio, location, gallery, and counts use this API; absent data renders empty/zero.
+- Removed mock/localStorage post publishing route until a storage-backed post workflow is implemented.
 

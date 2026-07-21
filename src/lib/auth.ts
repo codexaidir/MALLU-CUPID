@@ -61,15 +61,47 @@ export interface Profile {
   full_name: string | null;
   bio: string | null;
   avatar_url: string | null;
+  location: string;
+  instagram_url: string;
+  facebook_url: string;
+  gender: 'Prefer not to say' | 'Male' | 'Female' | 'Transgender';
+  is_private: boolean;
 }
 
-export async function getProfile(): Promise<{ profile?: Profile; error?: string }> {
+export interface ProfileStats {
+  posts: number;
+  followers: number;
+  following: number;
+}
+
+export interface CreatorPost {
+  id: string;
+  caption: string;
+  media_type: 'image' | 'video';
+  media_url: string;
+  is_paid: boolean;
+  price: number;
+  created_at: string;
+}
+
+export async function getProfile(): Promise<{
+  profile?: Profile;
+  stats?: ProfileStats;
+  posts?: CreatorPost[];
+  error?: string;
+}> {
   return apiGet('/profile');
 }
 
 export async function updateProfile(data: {
+  username?: string;
   full_name?: string;
   bio?: string;
+  location?: string;
+  instagram_url?: string;
+  facebook_url?: string;
+  gender?: Profile['gender'];
+  is_private?: boolean;
   avatar_url?: string;
   avatar_base64?: string;
   avatar_content_type?: string;

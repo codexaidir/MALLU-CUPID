@@ -453,10 +453,28 @@ const handleGetProfile = async (req: Request) => {
   const user = await fetchUser(accessToken)
   if (!user?.id) return jsonResponse({ error: 'Unauthorized' }, 401, {}, [], origin)
 
-  const res = await fetch(
-    `${SUPABASE_URL}/rest/v1/profiles?id=eq.${user.id}&select=id,username,full_name,bio,avatar_url&limit=1`,
-    { headers: { ...authHeaders(true) } },
-  )
+  const [res, postsCountRes, followersCountRes, followingCountRes, postsRes] = await Promise.all([
+    fetch(
+      `${SUPABASE_URL}/rest/v1/profiles?id=eq.${user.id}&select=id,username,full_name,bio,avatar_url,location,instagram_url,facebook_url,gender,is_private&limit=1`,
+      { headers: { ...authHeaders(true) } },
+    ),
+    fetch(`${SUPABASE_URL}/rest/v1/posts?creator_id=eq.${user.id}&select=id`, {
+      method: 'HEAD',
+      headers: { ...authHeaders(true), Prefer: 'count=exact', Range: '0-0' },
+    }),
+    fetch(`${SUPABASE_URL}/rest/v1/follows?following_id=eq.${user.id}&select=follower_id`, {
+      method: 'HEAD',
+      headers: { ...authHeaders(true), Prefer: 'count=exact', Range: '0-0' },
+    }),
+    fetch(`${SUPABASE_URL}/rest/v1/follows?follower_id=eq.${user.id}&select=following_id`, {
+      method: 'HEAD',
+      headers: { ...authHeaders(true), Prefer: 'count=exact', Range: '0-0' },
+    }),
+    fetch(
+      `${SUPABASE_URL}/rest/v1/posts?creator_id=eq.${user.id}&select=id,caption,media_type,media_url,is_paid,price,created_at&order=created_at.desc&limit=50`,
+      { headers: { ...authHeaders(true) } },
+    ),
+  ])
 
   if (!res.ok) return jsonResponse({ error: 'Failed to load profile' }, 500, {}, [], origin)
 
@@ -464,7 +482,19 @@ const handleGetProfile = async (req: Request) => {
   const profile = Array.isArray(rows) && rows.length ? rows[0] : null
   if (!profile) return jsonResponse({ error: 'Profile not found' }, 404, {}, [], origin)
 
-  return jsonResponse({ profile }, 200, {}, [], origin)
+  const readCount = (response: Response) => {
+    const range = response.headers.get('content-range') || ''
+    const total = range.split('/')[1]
+    return total && total !== '*' ? Number(total) || 0 : 0
+  }
+  const posts = postsRes.ok ? await postsRes.json().catch(() => []) : []
+  const stats = {
+    posts: postsCountRes.ok ? readCount(postsCountRes) : 0,
+    followers: followersCountRes.ok ? readCount(followersCountRes) : 0,
+    following: followingCountRes.ok ? readCount(followingCountRes) : 0,
+  }
+
+  return jsonResponse({ profile, stats, posts: Array.isArray(posts) ? posts : [] }, 200, {}, [], origin)
 }
 
 const handleProfile = async (req: Request) => {
@@ -480,15 +510,56 @@ const handleProfile = async (req: Request) => {
 
   const fullName = typeof body.full_name === 'string' ? body.full_name.trim() : ''
   const bio = typeof body.bio === 'string' ? body.bio.trim() : ''
+  const username = typeof body.username === 'string' ? body.username.trim().toLowerCase() : ''
+  const location = typeof body.location === 'string' ? body.location.trim() : ''
+  const instagramUrl = typeof body.instagram_url === 'string' ? body.instagram_url.trim() : ''
+  const facebookUrl = typeof body.facebook_url === 'string' ? body.facebook_url.trim() : ''
+  const gender = typeof body.gender === 'string' ? body.gender : 'Prefer not to say'
+  const isPrivate = body.is_private === true
   if (!fullName) return jsonResponse({ error: 'Display name is required' }, 400, {}, [], origin)
   if (!bio) return jsonResponse({ error: 'Bio is required' }, 400, {}, [], origin)
+  if (fullName.length > 100) return jsonResponse({ error: 'Display name must be 100 characters or fewer' }, 400, {}, [], origin)
   if (bio.length > 400) return jsonResponse({ error: 'Bio must be 400 characters or fewer' }, 400, {}, [], origin)
+  if (username && !/^[^\s]{6,25}$/.test(username)) {
+    return jsonResponse({ error: 'Username must be 6-25 characters without spaces' }, 400, {}, [], origin)
+  }
+  if (location.length > 100) return jsonResponse({ error: 'Location must be 100 characters or fewer' }, 400, {}, [], origin)
+  if (!['Prefer not to say', 'Male', 'Female', 'Transgender'].includes(gender)) {
+    return jsonResponse({ error: 'Invalid gender' }, 400, {}, [], origin)
+  }
+  for (const [label, value] of [['Instagram', instagramUrl], ['Facebook', facebookUrl]]) {
+    if (!value) continue
+    try {
+      const parsed = new URL(value)
+      if (!['http:', 'https:'].includes(parsed.protocol)) throw new Error()
+    } catch {
+      return jsonResponse({ error: `${label} URL is invalid` }, 400, {}, [], origin)
+    }
+  }
+
+  if (username) {
+    const usernameCheck = await fetch(
+      `${SUPABASE_URL}/rest/v1/profiles?username=eq.${encodeURIComponent(username)}&id=neq.${user.id}&select=id&limit=1`,
+      { headers: { ...authHeaders(true) } },
+    )
+    if (!usernameCheck.ok) return jsonResponse({ error: 'Failed to validate username' }, 500, {}, [], origin)
+    const existing = await usernameCheck.json().catch(() => [])
+    if (Array.isArray(existing) && existing.length) {
+      return jsonResponse({ error: 'Username is already taken' }, 409, {}, [], origin)
+    }
+  }
 
   const patch: Record<string, unknown> = {
     full_name: fullName,
     bio,
+    location,
+    instagram_url: instagramUrl,
+    facebook_url: facebookUrl,
+    gender,
+    is_private: isPrivate,
     updated_at: new Date().toISOString(),
   }
+  if (username) patch.username = username
 
   if (typeof body.avatar_base64 === 'string' && body.avatar_base64) {
     const contentType = typeof body.avatar_content_type === 'string' ? body.avatar_content_type : 'image/jpeg'

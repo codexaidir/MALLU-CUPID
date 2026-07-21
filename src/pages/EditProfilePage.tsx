@@ -1,34 +1,127 @@
-import React, { useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { ArrowLeft } from "lucide-react";
+import { AlertCircle, ArrowLeft, Camera, Loader2 } from "lucide-react";
 import { MobileHeader } from "../components/MobileHeader";
 import { MobileNavbar } from "../components/MobileNavbar";
+import { getProfile, updateProfile, type Profile } from "../lib/auth";
+
+const ACCEPTED_TYPES = ["image/jpeg", "image/jpg", "image/png", "image/webp", "image/gif"];
+const MAX_AVATAR_SIZE = 5 * 1024 * 1024;
+
+type EditForm = {
+  name: string;
+  username: string;
+  bio: string;
+  location: string;
+  instagram: string;
+  facebook: string;
+  isPrivate: boolean;
+  gender: Profile["gender"];
+};
 
 export default function EditProfilePage() {
   const navigate = useNavigate();
-  const [editForm, setEditForm] = useState({
-    name: 'Jane Doe',
-    username: 'mallucupid_creator',
-    bio: 'Exclusive content creator ✨\nSharing my journey and behind-the-scenes.\nSubscribe to my channel for daily updates! 👇',
-    location: 'New York, USA',
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const [editForm, setEditForm] = useState<EditForm>({
+    name: '',
+    username: '',
+    bio: '',
+    location: '',
     instagram: '',
     facebook: '',
     isPrivate: false,
-    gender: 'Prefer not to say'
+    gender: 'Prefer not to say',
   });
-  const [usernameError, setUsernameError] = useState('');
+  const [avatarUrl, setAvatarUrl] = useState<string | null>(null);
+  const [avatarBase64, setAvatarBase64] = useState<string | null>(null);
+  const [avatarType, setAvatarType] = useState<string | null>(null);
+  const [isLoading, setIsLoading] = useState(true);
+  const [isSaving, setIsSaving] = useState(false);
+  const [error, setError] = useState('');
 
-  const handleEditProfileSubmit = (e: React.FormEvent) => {
-    e.preventDefault();
-    if (editForm.username.length < 3) {
-      setUsernameError('Username must be at least 3 characters long');
+  useEffect(() => {
+    (async () => {
+      const response = await getProfile();
+      if (response.error || !response.profile) {
+        setError(response.error || 'Failed to load profile');
+        setIsLoading(false);
+        return;
+      }
+      const profile = response.profile;
+      setEditForm({
+        name: profile.full_name || '',
+        username: profile.username,
+        bio: profile.bio || '',
+        location: profile.location || '',
+        instagram: profile.instagram_url || '',
+        facebook: profile.facebook_url || '',
+        isPrivate: profile.is_private,
+        gender: profile.gender || 'Prefer not to say',
+      });
+      setAvatarUrl(profile.avatar_url);
+      setIsLoading(false);
+    })();
+  }, []);
+
+  const handleAvatarChange = (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    if (!file) return;
+    if (!ACCEPTED_TYPES.includes(file.type)) {
+      setError('Choose a JPG, PNG, WEBP, or GIF image.');
       return;
     }
-    
-    // Simulate saving data globally
-    localStorage.setItem('profileData', JSON.stringify(editForm));
-    navigate('/dashboard');
+    if (file.size > MAX_AVATAR_SIZE) {
+      setError('Profile image must be 5MB or smaller.');
+      return;
+    }
+    const reader = new FileReader();
+    reader.onloadend = () => {
+      const result = reader.result as string;
+      setAvatarUrl(result);
+      setAvatarBase64(result);
+      setAvatarType(file.type);
+      setError('');
+    };
+    reader.readAsDataURL(file);
   };
+
+  const handleEditProfileSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setError('');
+    if (!/^[^\s]{6,25}$/.test(editForm.username)) {
+      setError('Username must be 6-25 characters without spaces.');
+      return;
+    }
+    if (!editForm.name.trim() || !editForm.bio.trim()) {
+      setError('Display name and bio are required.');
+      return;
+    }
+
+    setIsSaving(true);
+    const response = await updateProfile({
+      username: editForm.username,
+      full_name: editForm.name,
+      bio: editForm.bio,
+      location: editForm.location,
+      instagram_url: editForm.instagram,
+      facebook_url: editForm.facebook,
+      gender: editForm.gender,
+      is_private: editForm.isPrivate,
+      ...(avatarBase64 && avatarType
+        ? { avatar_base64: avatarBase64, avatar_content_type: avatarType }
+        : {}),
+    });
+    setIsSaving(false);
+    if (response.error) {
+      setError(response.error);
+      return;
+    }
+    navigate('/dashboard', { replace: true });
+  };
+
+  if (isLoading) {
+    return <div className="min-h-screen flex items-center justify-center"><Loader2 className="w-7 h-7 text-rose-500 animate-spin" /></div>;
+  }
 
   return (
     <div className="min-h-screen bg-zinc-50 flex flex-col md:items-center md:justify-center md:p-8 pt-14 pb-14 md:pt-8 md:pb-8">
@@ -41,20 +134,30 @@ export default function EditProfilePage() {
           <h2 className="text-2xl font-bold text-zinc-900">Edit Profile</h2>
         </div>
 
+        {error && (
+          <div className="mb-6 bg-red-50 text-red-600 p-3 rounded-xl flex items-center gap-2 text-sm font-medium">
+            <AlertCircle className="w-4 h-4 shrink-0" /> {error}
+          </div>
+        )}
         <form id="edit-profile-form" onSubmit={handleEditProfileSubmit} className="space-y-6">
           {/* Profile Photo */}
           <div className="flex items-center gap-6">
             <div className="w-20 h-20 rounded-full overflow-hidden shrink-0 border border-zinc-200">
-              <img src="https://i.pravatar.cc/300?img=47" alt="Profile" className="w-full h-full object-cover" />
+              {avatarUrl ? (
+                <img src={avatarUrl} alt="Profile" className="w-full h-full object-cover" />
+              ) : (
+                <div className="w-full h-full bg-zinc-100 flex items-center justify-center"><Camera className="w-7 h-7 text-zinc-400" /></div>
+              )}
             </div>
             <div className="flex-1">
               <div className="mb-2">
                 <h4 className="font-bold text-zinc-900 text-sm">{editForm.username}</h4>
                 <p className="text-zinc-500 text-sm">{editForm.name}</p>
               </div>
-              <button type="button" className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white font-semibold rounded-lg text-sm transition-colors">
+              <button type="button" onClick={() => fileInputRef.current?.click()} className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white font-semibold rounded-lg text-sm transition-colors">
                 Change photo
               </button>
+              <input ref={fileInputRef} type="file" accept="image/jpeg,image/png,image/webp,image/gif" onChange={handleAvatarChange} className="hidden" />
             </div>
           </div>
 
@@ -79,19 +182,20 @@ export default function EditProfilePage() {
               value={editForm.username}
               onChange={(e) => {
                 setEditForm({...editForm, username: e.target.value});
-                setUsernameError('');
+                setError('');
               }}
-              className={`w-full px-4 py-3 bg-zinc-50 border ${usernameError ? 'border-red-500 focus:border-red-500 focus:ring-red-500/20' : 'border-zinc-200 focus:border-rose-500 focus:ring-rose-500/20'} rounded-xl focus:outline-none focus:ring-2 transition-colors`}
+              className="w-full px-4 py-3 bg-zinc-50 border border-zinc-200 focus:border-rose-500 focus:ring-rose-500/20 rounded-xl focus:outline-none focus:ring-2 transition-colors"
               placeholder="Username"
               required
             />
-            {usernameError && <p className="text-xs text-red-500 mt-1">{usernameError}</p>}
           </div>
 
           {/* Bio */}
           <div className="space-y-2">
             <label className="text-sm font-bold text-zinc-900">Bio</label>
             <textarea 
+              required
+              maxLength={400}
               value={editForm.bio}
               onChange={(e) => setEditForm({...editForm, bio: e.target.value})}
               className="w-full px-4 py-3 bg-zinc-50 border border-zinc-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-rose-500/20 focus:border-rose-500 transition-colors resize-none h-24"
@@ -166,11 +270,12 @@ export default function EditProfilePage() {
           </div>
 
           <div className="pt-4 border-t border-zinc-200">
-            <button 
+            <button
               type="submit"
-              className="w-full py-4 px-4 bg-zinc-900 hover:bg-zinc-800 text-white font-semibold rounded-xl transition-colors text-lg shadow-sm"
+              disabled={isSaving}
+              className="w-full py-4 px-4 bg-zinc-900 hover:bg-zinc-800 text-white font-semibold rounded-xl transition-colors text-lg shadow-sm disabled:opacity-50"
             >
-              Save Changes
+              {isSaving ? <Loader2 className="w-5 h-5 animate-spin mx-auto" /> : 'Save Changes'}
             </button>
           </div>
         </form>

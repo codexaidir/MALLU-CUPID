@@ -14,7 +14,6 @@ import VerifyOtpPage from "./pages/VerifyOtpPage";
 import ForgotPasswordPage from "./pages/ForgotPasswordPage";
 import DashboardPage from "./pages/DashboardPage";
 import VerificationPage from "./pages/VerificationPage";
-import CreatePostPage from "./pages/CreatePostPage";
 import EditProfilePage from "./pages/EditProfilePage";
 import CreatorOnboardingPage from "./pages/CreatorOnboardingPage";
 import TermsPage from "./pages/TermsPage";
@@ -67,7 +66,6 @@ export default function App() {
             
             <Route path="/dashboard" element={<ProtectedRoute><DashboardPage /></ProtectedRoute>} />
             <Route path="/edit-profile" element={<ProtectedRoute><EditProfilePage /></ProtectedRoute>} />
-            <Route path="/create-post" element={<ProtectedRoute><CreatePostPage /></ProtectedRoute>} />
             <Route path="/verification" element={<ProtectedRoute><VerificationPage /></ProtectedRoute>} />
             <Route path="*" element={<Navigate to="/" replace />} />
           </Routes>

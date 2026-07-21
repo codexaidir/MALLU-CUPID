@@ -4,111 +4,46 @@ import { Link, useNavigate } from "react-router-dom";
 import { LogOut, LayoutDashboard, Users, CreditCard, Heart, Grid, PlaySquare, Play, Menu, X, Bell, ShieldCheck, BadgeCheck, Wallet, MoreVertical, Edit2, Trash2, Plus, Copy, Check, Inbox, Settings, Link2, ImagePlus, Radio, TrendingUp, Sparkles, UploadCloud, FileImage, FileVideo, Eye, LockKeyhole } from "lucide-react";
 import { MobileHeader } from "../components/MobileHeader";
 import { MobileNavbar } from "../components/MobileNavbar";
+import { getProfile, logout, type CreatorPost, type Profile, type ProfileStats } from "../lib/auth";
 
 export default function DashboardPage() {
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
   const [isSignOutModalOpen, setIsSignOutModalOpen] = useState(false);
   const [isShareModalOpen, setIsShareModalOpen] = useState(false);
-  const [editForm, setEditForm] = useState(() => {
-    const saved = localStorage.getItem('profileData');
-    if (saved) {
-      try {
-        return JSON.parse(saved);
-      } catch (e) {}
-    }
-    return {
-      name: 'Jane Doe',
-      username: 'mallucupid_creator',
-      bio: 'Exclusive content creator ✨\nSharing my journey and behind-the-scenes.\nSubscribe to my channel for daily updates! 👇',
-      location: 'New York, USA',
-      instagram: '',
-      facebook: '',
-      isPrivate: false,
-      gender: 'Prefer not to say'
-    };
-  });
-  const [usernameError, setUsernameError] = useState('');
+  const [profile, setProfile] = useState<Profile | null>(null);
+  const [stats, setStats] = useState<ProfileStats>({ posts: 0, followers: 0, following: 0 });
   const [copied, setCopied] = useState(false);
-  const [activePostMenu, setActivePostMenu] = useState<number | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [isNotificationsOpen, setIsNotificationsOpen] = useState(false);
   const [activeTab, setActiveTab] = useState<'grid' | 'video'>('grid');
-  const [isNewPostMenuOpen, setIsNewPostMenuOpen] = useState(false);
   const navigate = useNavigate();
 
-  const [isEditProfileModalOpen, setIsEditProfileModalOpen] = useState(false);
-  const [posts, setPosts] = useState([
-    { id: 1, img: "https://images.unsplash.com/photo-1522202176988-66273c2fd55f?w=400&q=80", type: "image", caption: "Beautiful day! ☀️", isPaid: false, price: 0 },
-    { id: 2, img: "https://images.unsplash.com/photo-1517841905240-472988babdf9?w=400&q=80", type: "video", caption: "Workout routine part 1 💪 Check it out!", isPaid: true, price: 5 },
-    { id: 3, img: "https://images.unsplash.com/photo-1531746020798-e6953c6e8e04?w=400&q=80", type: "image", caption: "Love this outfit 🔥", isPaid: false, price: 0 },
-    { id: 4, img: "https://images.unsplash.com/photo-1523240795612-9a054b0db644?w=400&q=80", type: "image", caption: "Coffee time ☕️", isPaid: false, price: 0 },
-    { id: 5, img: "https://images.unsplash.com/photo-1517245386807-bb43f82c33c4?w=400&q=80", type: "video", caption: "Behind the scenes 🎬", isPaid: true, price: 10 },
-    { id: 6, img: "https://images.unsplash.com/photo-1507525428034-b723cf961d3e?w=400&q=80", type: "image", caption: "Throwback to summer 🏖️", isPaid: false, price: 0 },
-    { id: 7, img: "https://images.unsplash.com/photo-1494790108377-be9c29b29330?w=400&q=80", type: "video", caption: "Q&A answering your questions!", isPaid: false, price: 0 },
-    { id: 8, img: "https://images.unsplash.com/photo-1524504388940-b1c1722653e1?w=400&q=80", type: "image", caption: "Studio vibes ✨", isPaid: false, price: 0 },
-    { id: 9, img: "https://images.unsplash.com/photo-1469334031218-e382a71b716b?w=400&q=80", type: "image", caption: "Sunset views 🌅", isPaid: false, price: 0 },
-  ]);
+  const [posts, setPosts] = useState<CreatorPost[]>([]);
 
-  const filteredPosts = posts.filter(post => activeTab === 'grid' ? post.type === 'image' : post.type === 'video');
+  const filteredPosts = posts.filter(post => activeTab === 'grid' ? post.media_type === 'image' : post.media_type === 'video');
 
   useEffect(() => {
-    // Simulate loading data
-    const timer = setTimeout(() => {
+    (async () => {
+      const response = await getProfile();
+      if (response.profile) setProfile(response.profile);
+      if (response.stats) setStats(response.stats);
+      setPosts(response.posts || []);
       setIsLoading(false);
-    }, 2000);
-
-    // Load temporarily saved posts if any
-    const temp = localStorage.getItem('temp_posts');
-    if (temp) {
-      try {
-        const parsed = JSON.parse(temp);
-        setPosts(prev => [...parsed, ...prev]);
-        localStorage.removeItem('temp_posts'); // clear after reading
-      } catch (e) {
-        console.error(e);
-      }
-    }
-
-    return () => clearTimeout(timer);
+    })();
   }, []);
 
-  const handleSignOut = () => {
+  const handleSignOut = async () => {
+    await logout();
     setIsSignOutModalOpen(false);
-    navigate("/");
+    navigate("/", { replace: true });
   };
 
   const handleCopyLink = () => {
-    const url = `${window.location.origin}/${editForm.username}`;
+    if (!profile) return;
+    const url = `${window.location.origin}/${profile.username}`;
     navigator.clipboard.writeText(url);
     setCopied(true);
     setTimeout(() => setCopied(false), 2000);
-  };
-
-  const handleEditProfileSubmit = (e: React.FormEvent) => {
-    e.preventDefault();
-    // Rule: 6 to 30 characters, alphanumeric + special icons (like . and _)
-    const usernameRegex = /^[\w.]{6,30}$/; 
-    if (!usernameRegex.test(editForm.username)) {
-      setUsernameError('Username must be 6-30 characters long and can contain alphanumeric characters and special icons (like . or _).');
-      return;
-    }
-    
-    // Simulate check with backend
-    if (editForm.username.toLowerCase() === 'taken_username') {
-      setUsernameError('This username is already taken.');
-      return;
-    }
-    
-    setUsernameError('');
-    
-    // Save username in lowercase
-    const savedData = {
-      ...editForm,
-      username: editForm.username.toLowerCase()
-    };
-    
-    setEditForm(savedData);
-    setIsEditProfileModalOpen(false);
   };
 
   const SidebarContent = ({ isExpanded = false }: { isExpanded?: boolean }) => (
@@ -241,7 +176,13 @@ export default function DashboardPage() {
                 <div className="flex items-center gap-6 sm:gap-12 mb-6">
                   {/* Profile Image */}
                   <div className="w-24 h-24 sm:w-36 sm:h-36 rounded-full overflow-hidden flex-shrink-0 relative border border-zinc-200">
-                    <img src="https://i.pravatar.cc/300?img=47" alt="Profile" className="w-full h-full object-cover" />
+                    {profile?.avatar_url ? (
+                      <img src={profile.avatar_url} alt="Profile" className="w-full h-full object-cover" />
+                    ) : (
+                      <div className="w-full h-full bg-zinc-200 flex items-center justify-center text-2xl font-bold text-zinc-500">
+                        {profile?.username?.charAt(0).toUpperCase() || '?'}
+                      </div>
+                    )}
                     {/* Note bubble */}
                     <div className="absolute top-0 left-1/2 -translate-x-1/2 bg-zinc-800 text-white text-[10px] px-2 py-1 rounded-full whitespace-nowrap shadow-sm border border-zinc-700 hidden sm:block">
                       Note...
@@ -250,29 +191,29 @@ export default function DashboardPage() {
                   
                   <div className="flex flex-col flex-grow">
                     <div className="flex items-center gap-3 mb-4">
-                      <h2 className="text-xl sm:text-2xl font-bold text-zinc-900">{editForm.username}</h2>
-                      <Settings className="w-5 h-5 sm:w-6 sm:h-6 text-zinc-900 cursor-pointer hover:opacity-70" onClick={() => setIsEditProfileModalOpen(true)} />
+                      <h2 className="text-xl sm:text-2xl font-bold text-zinc-900">{profile?.username || ''}</h2>
+                      <Settings className="w-5 h-5 sm:w-6 sm:h-6 text-zinc-900 cursor-pointer hover:opacity-70" onClick={() => navigate('/edit-profile')} />
                     </div>
 
                     {/* Stats Desktop */}
                     <div className="flex items-center gap-6 sm:gap-10">
-                      <div className="flex flex-col items-center sm:items-start"><span className="font-bold text-zinc-900 text-lg">42</span> <span className="text-zinc-900 text-sm">posts</span></div>
-                      <div className="flex flex-col items-center sm:items-start"><span className="font-bold text-zinc-900 text-lg">12.5k</span> <span className="text-zinc-900 text-sm">followers</span></div>
-                      <div className="flex flex-col items-center sm:items-start"><span className="font-bold text-zinc-900 text-lg">340</span> <span className="text-zinc-900 text-sm">following</span></div>
+                      <div className="flex flex-col items-center sm:items-start"><span className="font-bold text-zinc-900 text-lg">{stats.posts}</span> <span className="text-zinc-900 text-sm">posts</span></div>
+                      <div className="flex flex-col items-center sm:items-start"><span className="font-bold text-zinc-900 text-lg">{stats.followers}</span> <span className="text-zinc-900 text-sm">followers</span></div>
+                      <div className="flex flex-col items-center sm:items-start"><span className="font-bold text-zinc-900 text-lg">{stats.following}</span> <span className="text-zinc-900 text-sm">following</span></div>
                     </div>
                   </div>
                 </div>
 
                 {/* Bio */}
                 <div className="mb-6 text-sm">
-                  <h3 className="font-bold text-zinc-900 mb-0.5 text-base">{editForm.name}</h3>
+                  <h3 className="font-bold text-zinc-900 mb-0.5 text-base">{profile?.full_name || ''}</h3>
                   <p className="text-zinc-500 mb-1">Creator</p>
                   <p className="text-zinc-900 whitespace-pre-line leading-relaxed mb-1">
-                    {editForm.bio}
+                    {profile?.bio || ''}
                   </p>
-                  <p className="text-zinc-600 mb-1">📍 {editForm.location}</p>
+                  {profile?.location && <p className="text-zinc-600 mb-1">📍 {profile.location}</p>}
                   <a href="#" className="text-blue-900 font-semibold inline-flex items-center gap-1 flex-wrap break-all">
-                    <Link2 className="w-4 h-4 shrink-0"/> <span className="break-all">{window.location.host}/{editForm.username}</span>
+                    <Link2 className="w-4 h-4 shrink-0"/> <span className="break-all">{window.location.host}/{profile?.username || ''}</span>
                   </a>
                 </div>
 
@@ -290,39 +231,6 @@ export default function DashboardPage() {
                   >
                     Share profile
                   </button>
-                  <div className="flex-1 relative">
-                    <button 
-                      onClick={() => setIsNewPostMenuOpen(!isNewPostMenuOpen)}
-                      className="w-full py-1.5 px-4 bg-zinc-200 hover:bg-zinc-300 text-zinc-900 font-semibold rounded-lg text-sm transition-colors text-center"
-                    >
-                      New post
-                    </button>
-                    {isNewPostMenuOpen && (
-                      <>
-                        <div className="fixed inset-0 z-40" onClick={() => setIsNewPostMenuOpen(false)} />
-                        <motion.div 
-                          initial={{ opacity: 0, y: 10 }}
-                          animate={{ opacity: 1, y: 0 }}
-                          className="absolute right-0 top-full mt-2 w-48 bg-zinc-900 text-white rounded-xl shadow-xl overflow-hidden z-50 py-2"
-                        >
-                          <button 
-                            onClick={() => { setIsNewPostMenuOpen(false); navigate('/create-post?type=photo'); }}
-                            className="w-full flex items-center justify-between px-4 py-2.5 hover:bg-zinc-800 transition-colors"
-                          >
-                            <span className="font-semibold text-sm">Photo</span>
-                            <ImagePlus className="w-5 h-5" />
-                          </button>
-                          <button 
-                            onClick={() => { setIsNewPostMenuOpen(false); navigate('/create-post?type=video'); }}
-                            className="w-full flex items-center justify-between px-4 py-2.5 hover:bg-zinc-800 transition-colors"
-                          >
-                            <span className="font-semibold text-sm">Video</span>
-                            <Radio className="w-5 h-5" />
-                          </button>
-                        </motion.div>
-                      </>
-                    )}
-                  </div>
                 </div>
               </motion.div>
 
@@ -351,16 +259,20 @@ export default function DashboardPage() {
               >
                 {filteredPosts.map((post) => (
                   <div key={post.id} className="relative bg-white border border-zinc-200 rounded-xl overflow-hidden shadow-sm flex flex-col group">
-                    <div className={`relative ${post.type === 'video' ? 'aspect-[9/16]' : 'aspect-[4/5]'} bg-zinc-200 overflow-hidden shrink-0`}>
-                      <img src={post.img} alt={`Post ${post.id}`} className={`w-full h-full object-cover transition-transform duration-500 ${post.isPaid ? 'blur-[12px] scale-110' : 'group-hover:scale-105'}`} />
+                    <div className={`relative ${post.media_type === 'video' ? 'aspect-[9/16]' : 'aspect-[4/5]'} bg-zinc-200 overflow-hidden shrink-0`}>
+                      {post.media_type === 'video' ? (
+                        <video src={post.media_url} className={`w-full h-full object-cover ${post.is_paid ? 'blur-[12px] scale-110' : ''}`} controls={!post.is_paid} />
+                      ) : (
+                        <img src={post.media_url} alt={`Post ${post.id}`} className={`w-full h-full object-cover transition-transform duration-500 ${post.is_paid ? 'blur-[12px] scale-110' : 'group-hover:scale-105'}`} />
+                      )}
                       
-                      {post.type === 'video' && !post.isPaid && (
+                      {post.media_type === 'video' && !post.is_paid && (
                         <div className="absolute top-2 left-2 p-1 bg-black/40 backdrop-blur-md rounded-full text-white">
                           <Play className="w-4 h-4 fill-white" />
                         </div>
                       )}
 
-                      {post.isPaid && (
+                      {post.is_paid && (
                         <div className="absolute inset-0 bg-black/20 flex flex-col items-center justify-center pointer-events-none z-10">
                           <div className="bg-white/90 backdrop-blur-sm p-3 rounded-full mb-2 shadow-lg">
                             <LockKeyhole className="w-6 h-6 text-zinc-900" />
@@ -368,46 +280,6 @@ export default function DashboardPage() {
                           <span className="text-white font-bold drop-shadow-md bg-black/40 px-3 py-1 rounded-full text-sm">Exclusive Content</span>
                         </div>
                       )}
-                      
-                      {/* Post Action Menu */}
-                      <div className="absolute top-2 right-2 z-20">
-                        <div className="relative">
-                          <button 
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              setActivePostMenu(activePostMenu === post.id ? null : post.id);
-                            }}
-                            className="p-1.5 bg-black/40 hover:bg-black/60 backdrop-blur-md rounded-full text-white transition-opacity shadow-sm"
-                          >
-                            <MoreVertical className="w-4 h-4" />
-                          </button>
-                          
-                          {/* Dropdown Menu */}
-                          <AnimatePresence>
-                            {activePostMenu === post.id && (
-                              <motion.div 
-                                initial={{ opacity: 0, scale: 0.95 }}
-                                animate={{ opacity: 1, scale: 1 }}
-                                exit={{ opacity: 0, scale: 0.95 }}
-                                className="absolute top-full right-0 mt-1 w-32 bg-white rounded-xl shadow-lg border border-zinc-200 py-1 overflow-hidden z-30"
-                              >
-                                <button className="w-full px-3 py-2 text-sm text-left text-zinc-700 hover:bg-zinc-50 flex items-center gap-2">
-                                  <Edit2 className="w-4 h-4" /> Edit
-                                </button>
-                                <button 
-                                  onClick={() => {
-                                    setPosts(posts.filter(p => p.id !== post.id));
-                                    setActivePostMenu(null);
-                                  }}
-                                  className="w-full px-3 py-2 text-sm text-left text-rose-600 hover:bg-rose-50 flex items-center gap-2"
-                                >
-                                  <Trash2 className="w-4 h-4" /> Delete
-                                </button>
-                              </motion.div>
-                            )}
-                          </AnimatePresence>
-                        </div>
-                      </div>
                     </div>
                     
                     <div className="p-4 flex flex-col flex-1 bg-white">
@@ -416,27 +288,23 @@ export default function DashboardPage() {
                       </p>
                       
                       <div className="mt-auto flex items-center justify-between">
-                        {post.isPaid ? (
+                        {post.is_paid ? (
                           <>
                             <span className="font-bold text-zinc-900 text-lg">₹{post.price}</span>
                             <button className="px-4 py-2 bg-zinc-900 hover:bg-zinc-800 text-white rounded-lg text-xs font-semibold transition-colors flex items-center gap-2 shrink-0">
                               Pay & View
                             </button>
                           </>
-                        ) : (
-                          <>
-                            <div className="flex items-center gap-4 text-zinc-500">
-                              <span className="flex items-center gap-1 text-sm font-medium"><Heart className="w-4 h-4" /> {Math.floor(Math.random() * 1000) + 100}</span>
-                            </div>
-                            <button className="px-4 py-2 bg-blue-50 text-blue-600 hover:bg-blue-100 rounded-lg text-xs font-semibold transition-colors flex items-center gap-2 shrink-0">
-                              <Eye className="w-4 h-4" /> View
-                            </button>
-                          </>
-                        )}
+                        ) : <span className="text-xs text-zinc-500">Free post</span>}
                       </div>
                     </div>
                   </div>
                 ))}
+                {!filteredPosts.length && (
+                  <div className="col-span-2 py-16 text-center text-zinc-500">
+                    No {activeTab === 'video' ? 'video' : 'image'} posts yet.
+                  </div>
+                )}
               </motion.div>
             </>
           )}
@@ -469,7 +337,7 @@ export default function DashboardPage() {
               
               <div className="bg-zinc-50 border border-zinc-200 rounded-xl p-4 flex items-center justify-between gap-4">
                 <span className="text-zinc-700 text-sm truncate flex-1 font-medium select-all">
-                  {`${window.location.origin}/${editForm.username}`}
+                  {`${window.location.origin}/${profile?.username || ''}`}
                 </span>
                 <button 
                   onClick={handleCopyLink}
@@ -553,43 +421,8 @@ export default function DashboardPage() {
                   <X className="w-5 h-5" />
                 </button>
               </div>
-              <div className="flex-1 overflow-y-auto p-4 space-y-3">
-                <div className="flex gap-4 items-start p-3 bg-rose-50 rounded-xl">
-                  <div className="w-10 h-10 rounded-full bg-rose-100 flex items-center justify-center flex-shrink-0 mt-1">
-                    <Heart className="w-5 h-5 text-rose-500" />
-                  </div>
-                  <div>
-                    <p className="text-sm text-zinc-900"><span className="font-bold">alex_smith</span> subscribed to your premium tier.</p>
-                    <span className="text-xs text-zinc-500 mt-1 block">2 minutes ago</span>
-                  </div>
-                </div>
-                <div className="flex gap-4 items-start p-3 hover:bg-zinc-50 rounded-xl transition-colors border border-transparent hover:border-zinc-200">
-                  <div className="w-10 h-10 rounded-full bg-emerald-100 flex items-center justify-center flex-shrink-0 mt-1">
-                    <CreditCard className="w-5 h-5 text-emerald-600" />
-                  </div>
-                  <div>
-                    <p className="text-sm text-zinc-900">Your payout of <span className="font-bold">$450.00</span> has been processed.</p>
-                    <span className="text-xs text-zinc-500 mt-1 block">2 hours ago</span>
-                  </div>
-                </div>
-                <div className="flex gap-4 items-start p-3 hover:bg-zinc-50 rounded-xl transition-colors border border-transparent hover:border-zinc-200">
-                  <div className="w-10 h-10 rounded-full bg-blue-100 flex items-center justify-center flex-shrink-0 mt-1">
-                    <Users className="w-5 h-5 text-blue-600" />
-                  </div>
-                  <div>
-                    <p className="text-sm text-zinc-900">You reached <span className="font-bold">12.5k followers</span>! Keep up the great work.</p>
-                    <span className="text-xs text-zinc-500 mt-1 block">1 day ago</span>
-                  </div>
-                </div>
-                <div className="flex gap-4 items-start p-3 hover:bg-zinc-50 rounded-xl transition-colors border border-transparent hover:border-zinc-200">
-                  <div className="w-10 h-10 rounded-full bg-amber-100 flex items-center justify-center flex-shrink-0 mt-1">
-                    <ShieldCheck className="w-5 h-5 text-amber-600" />
-                  </div>
-                  <div>
-                    <p className="text-sm text-zinc-900">Please complete your identity verification to enable higher payouts.</p>
-                    <span className="text-xs text-zinc-500 mt-1 block">2 days ago</span>
-                  </div>
-                </div>
+              <div className="flex-1 p-8 flex items-center justify-center text-sm text-zinc-500">
+                No notifications yet.
               </div>
             </motion.div>
           </div>
