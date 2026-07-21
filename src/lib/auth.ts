@@ -403,8 +403,8 @@ export async function getProfile(): Promise<{
   return apiGet('/profile');
 }
 
+// Note: username is intentionally not accepted — it is permanent after signup
 export async function updateProfile(data: {
-  username?: string;
   full_name?: string;
   bio?: string;
   location?: string;

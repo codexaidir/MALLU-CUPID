@@ -774,20 +774,16 @@ const handleProfile = async (req: Request) => {
 
   const fullName = typeof body.full_name === 'string' ? body.full_name.trim() : ''
   const bio = typeof body.bio === 'string' ? body.bio.trim() : ''
-  const username = typeof body.username === 'string' ? body.username.trim().toLowerCase() : ''
   const location = typeof body.location === 'string' ? body.location.trim() : ''
   const instagramUrl = typeof body.instagram_url === 'string' ? body.instagram_url.trim() : ''
   const facebookUrl = typeof body.facebook_url === 'string' ? body.facebook_url.trim() : ''
   const gender = typeof body.gender === 'string' ? body.gender : 'Prefer not to say'
-  const isPrivate = body.is_private === true
+  // Optional: only touch is_private when the client explicitly sends a boolean
+  const isPrivate = typeof body.is_private === 'boolean' ? body.is_private : undefined
   if (!fullName) return jsonResponse({ error: 'Display name is required' }, 400, {}, [], origin)
   if (!bio) return jsonResponse({ error: 'Bio is required' }, 400, {}, [], origin)
   if (fullName.length > 100) return jsonResponse({ error: 'Display name must be 100 characters or fewer' }, 400, {}, [], origin)
   if (bio.length > 400) return jsonResponse({ error: 'Bio must be 400 characters or fewer' }, 400, {}, [], origin)
-  if (username) {
-    const usernameFormatError = validateUsernameFormat(username)
-    if (usernameFormatError) return jsonResponse({ error: usernameFormatError }, 400, {}, [], origin)
-  }
   if (location.length > 100) return jsonResponse({ error: 'Location must be 100 characters or fewer' }, 400, {}, [], origin)
   if (!['Prefer not to say', 'Male', 'Female', 'Transgender'].includes(gender)) {
     return jsonResponse({ error: 'Invalid gender' }, 400, {}, [], origin)
@@ -802,10 +798,15 @@ const handleProfile = async (req: Request) => {
     }
   }
 
-  if (username) {
-    const taken = await isUsernameTaken(username, { excludeUserId: user.id })
-    if (taken === null) return jsonResponse({ error: 'Failed to validate username' }, 500, {}, [], origin)
-    if (taken) return jsonResponse({ error: USERNAME_TAKEN_ERROR }, 409, {}, [], origin)
+  // Usernames are permanent once created at signup. Reject any attempt to
+  // change it, even from clients that bypass the frontend.
+  const requestedUsername = typeof body.username === 'string' ? body.username.trim().toLowerCase() : ''
+  if (requestedUsername) {
+    const current = await fetchProfileBrief(user.id)
+    const currentUsername = String(current?.username || '').toLowerCase()
+    if (currentUsername && requestedUsername !== currentUsername) {
+      return jsonResponse({ error: 'Username cannot be changed' }, 400, {}, [], origin)
+    }
   }
 
   const patch: Record<string, unknown> = {
@@ -815,10 +816,9 @@ const handleProfile = async (req: Request) => {
     instagram_url: instagramUrl,
     facebook_url: facebookUrl,
     gender,
-    is_private: isPrivate,
     updated_at: new Date().toISOString(),
   }
-  if (username) patch.username = username
+  if (typeof isPrivate === 'boolean') patch.is_private = isPrivate
 
   if (typeof body.avatar_base64 === 'string' && body.avatar_base64) {
     const contentType = typeof body.avatar_content_type === 'string' ? body.avatar_content_type : 'image/jpeg'
@@ -841,19 +841,7 @@ const handleProfile = async (req: Request) => {
   if (!res.ok) {
     const err = await res.text().catch(() => '')
     console.error('Profile update failed:', err)
-    if (err.includes('23505') || err.toLowerCase().includes('duplicate')) {
-      return jsonResponse({ error: USERNAME_TAKEN_ERROR }, 409, {}, [], origin)
-    }
     return jsonResponse({ error: 'Failed to update profile' }, 500, {}, [], origin)
-  }
-
-  // Keep auth user metadata in sync so the frontend can build /<username> URLs from the session
-  if (username && username !== user.user_metadata?.username) {
-    await fetch(`${SUPABASE_URL}/auth/v1/admin/users/${user.id}`, {
-      method: 'PUT',
-      headers: { ...authHeaders(true) },
-      body: JSON.stringify({ user_metadata: { ...(user.user_metadata || {}), username } }),
-    }).catch((err) => console.error('Failed to sync username metadata:', err))
   }
 
   const rows = await res.json().catch(() => [])

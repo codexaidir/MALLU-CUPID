@@ -1,7 +1,7 @@
 import React, { useEffect, useRef, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
-import { AlertCircle, ArrowLeft, Camera, Loader2 } from "lucide-react";
-import { getProfile, updateProfile, USERNAME_REGEX, type Profile } from "../lib/auth";
+import { AlertCircle, ArrowLeft, Camera, Loader2, Lock } from "lucide-react";
+import { getProfile, updateProfile, type Profile } from "../lib/auth";
 
 const ACCEPTED_TYPES = ["image/jpeg", "image/jpg", "image/png", "image/webp", "image/gif"];
 const MAX_AVATAR_SIZE = 5 * 1024 * 1024;
@@ -13,7 +13,6 @@ type EditForm = {
   location: string;
   instagram: string;
   facebook: string;
-  isPrivate: boolean;
   gender: Profile["gender"];
 };
 
@@ -28,7 +27,6 @@ export default function EditProfilePage() {
     location: '',
     instagram: '',
     facebook: '',
-    isPrivate: false,
     gender: 'Prefer not to say',
   });
   const [avatarUrl, setAvatarUrl] = useState<string | null>(null);
@@ -54,7 +52,6 @@ export default function EditProfilePage() {
         location: profile.location || '',
         instagram: profile.instagram_url || '',
         facebook: profile.facebook_url || '',
-        isPrivate: profile.is_private,
         gender: profile.gender || 'Prefer not to say',
       });
       setAvatarUrl(profile.avatar_url);
@@ -87,25 +84,20 @@ export default function EditProfilePage() {
   const handleEditProfileSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError('');
-    if (!USERNAME_REGEX.test(editForm.username)) {
-      setError('Username must be 6-25 characters using only letters, numbers, and _ . - (no spaces).');
-      return;
-    }
     if (!editForm.name.trim() || !editForm.bio.trim()) {
       setError('Display name and bio are required.');
       return;
     }
 
     setIsSaving(true);
+    // Username is intentionally never sent: it is permanent after signup
     const response = await updateProfile({
-      username: editForm.username,
       full_name: editForm.name,
       bio: editForm.bio,
       location: editForm.location,
       instagram_url: editForm.instagram,
       facebook_url: editForm.facebook,
       gender: editForm.gender,
-      is_private: editForm.isPrivate,
       ...(avatarBase64 && avatarType
         ? { avatar_base64: avatarBase64, avatar_content_type: avatarType }
         : {}),
@@ -115,7 +107,7 @@ export default function EditProfilePage() {
       setError(response.error);
       return;
     }
-    navigate(`/${editForm.username || routeUsername}`, { replace: true });
+    navigate(`/${routeUsername}`, { replace: true });
   };
 
   if (isLoading) {
@@ -172,20 +164,20 @@ export default function EditProfilePage() {
             />
           </div>
 
-          {/* Username */}
+          {/* Username (permanent, read-only) */}
           <div className="space-y-2">
             <label className="text-sm font-bold text-zinc-900">Username</label>
-            <input 
-              type="text"
-              value={editForm.username}
-              onChange={(e) => {
-                setEditForm({...editForm, username: e.target.value});
-                setError('');
-              }}
-              className="w-full px-4 py-3 bg-zinc-50 border border-zinc-200 focus:border-rose-500 focus:ring-rose-500/20 rounded-xl focus:outline-none focus:ring-2 transition-colors"
-              placeholder="Username"
-              required
-            />
+            <div className="relative">
+              <input 
+                type="text"
+                value={editForm.username}
+                readOnly
+                disabled
+                className="w-full px-4 py-3 pr-11 bg-zinc-100 border border-zinc-200 rounded-xl text-zinc-500 cursor-not-allowed focus:outline-none"
+              />
+              <Lock className="absolute right-4 top-1/2 -translate-y-1/2 w-4 h-4 text-zinc-400" />
+            </div>
+            <p className="text-xs text-zinc-500">Usernames are permanent and cannot be changed.</p>
           </div>
 
           {/* Bio */}
@@ -234,37 +226,19 @@ export default function EditProfilePage() {
             </div>
           </div>
 
-          {/* Gender & Privacy */}
-          <div className="flex flex-col sm:flex-row gap-6">
-            <div className="space-y-2 flex-1">
-              <label className="text-sm font-bold text-zinc-900">Gender</label>
-              <select
-                value={editForm.gender}
-                onChange={(e) => setEditForm({...editForm, gender: e.target.value})}
-                className="w-full px-4 py-3 bg-zinc-50 border border-zinc-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-rose-500/20 focus:border-rose-500 transition-colors appearance-none"
-              >
-                <option value="Prefer not to say">Prefer not to say</option>
-                <option value="Male">Male</option>
-                <option value="Female">Female</option>
-                <option value="Transgender">Transgender</option>
-              </select>
-            </div>
-
-            <div className="space-y-2 flex-1 pt-2 sm:pt-0 border-t sm:border-t-0 border-zinc-100 sm:border-none flex flex-col justify-center">
-              <div className="flex items-center justify-between">
-                <div>
-                  <label className="text-sm font-bold text-zinc-900">Private account</label>
-                </div>
-                <button 
-                  type="button"
-                  onClick={() => setEditForm({...editForm, isPrivate: !editForm.isPrivate})}
-                  className={`w-11 h-6 rounded-full transition-colors relative ${editForm.isPrivate ? 'bg-zinc-900' : 'bg-zinc-200'}`}
-                >
-                  <span className={`absolute top-1/2 -translate-y-1/2 w-4 h-4 rounded-full bg-white transition-all ${editForm.isPrivate ? 'left-[calc(100%-20px)]' : 'left-1'}`} />
-                </button>
-              </div>
-              <p className="text-xs text-zinc-500 mt-1">Profile and posts hidden when private.</p>
-            </div>
+          {/* Gender */}
+          <div className="space-y-2">
+            <label className="text-sm font-bold text-zinc-900">Gender</label>
+            <select
+              value={editForm.gender}
+              onChange={(e) => setEditForm({...editForm, gender: e.target.value})}
+              className="w-full px-4 py-3 bg-zinc-50 border border-zinc-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-rose-500/20 focus:border-rose-500 transition-colors appearance-none"
+            >
+              <option value="Prefer not to say">Prefer not to say</option>
+              <option value="Male">Male</option>
+              <option value="Female">Female</option>
+              <option value="Transgender">Transgender</option>
+            </select>
           </div>
 
           <div className="pt-4 border-t border-zinc-200">

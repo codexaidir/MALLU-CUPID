@@ -155,3 +155,9 @@ The application uses URL-based pagination (React Router) with the following rout
 - Page (`/<username>/notifications`): grouped **New** (unread at load — kept in New for the visit while marked read server-side), **Today**, and **Earlier**. Rows show the actor avatar (initial fallback) with a type badge (rose heart = like, amber ₹ = unlock, sky + = request, emerald check = accept), bold actor name with message and quoted caption snippet, relative time (now / Xm / Xh / Xd / date), and a rose unread dot. Tapping opens the post viewer (like/unlock) or the chat (request/accept). Loading, error, and empty states included; mobile responsive under the fixed header/navbar.
 - Tested end-to-end via API (like -> notification, request -> notification, accept -> notification for requester, reply auto-accept -> notification, mark-all-read, self-like produces nothing, unlike retracts) and in the browser (desktop + mobile viewport). Seeded test data removed afterwards.
 
+## Immutable usernames + edit-profile cleanup
+
+- Usernames are permanent once created at signup. `POST /profile` never updates the username: if a request includes a username different from the current one it returns 400 "Username cannot be changed" (backend-enforced, works even if the frontend is bypassed). The username -> auth metadata sync on profile update was removed as unnecessary.
+- Edit Profile page: username field is read-only (grayed, lock icon, "Usernames are permanent and cannot be changed.") and is not sent on save — this also fixes the false "Username already taken" error that appeared when changing the avatar.
+- The "Private account" toggle was removed from Edit Profile. `is_private` is only written when a client explicitly sends a boolean, so existing values are preserved.
+
