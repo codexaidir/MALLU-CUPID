@@ -993,6 +993,101 @@ const fetchPostByPublicId = async (publicId: string) => {
   return Array.isArray(rows) && rows.length ? rows[0] : null
 }
 
+// Fire-and-forget notification insert. Never notifies the actor about their
+// own action; duplicate "like" notifications are ignored via the unique index.
+const createNotification = async (n: {
+  user_id: string
+  actor_id: string
+  type: 'like' | 'purchase' | 'request' | 'accept'
+  post_id?: string
+  post_public_id?: string
+  conversation_id?: string
+}) => {
+  if (!n.user_id || !n.actor_id || n.user_id === n.actor_id) return
+  await fetch(`${SUPABASE_URL}/rest/v1/notifications`, {
+    method: 'POST',
+    headers: { ...authHeaders(true), Prefer: 'return=minimal,resolution=ignore-duplicates' },
+    body: JSON.stringify([n]),
+  }).catch(() => {})
+}
+
+const handleGetNotifications = async (req: Request) => {
+  const origin = req.headers.get('origin')
+  const user = await requireUser(req)
+  if (!user) return jsonResponse({ error: 'Unauthorized' }, 401, {}, [], origin)
+
+  const res = await fetch(
+    `${SUPABASE_URL}/rest/v1/notifications?user_id=eq.${user.id}&select=*&order=created_at.desc&limit=100`,
+    { headers: { ...authHeaders(true) } },
+  )
+  if (!res.ok) return jsonResponse({ error: 'Failed to load notifications' }, 500, {}, [], origin)
+  const rows = await res.json().catch(() => [])
+  const list = Array.isArray(rows) ? rows : []
+
+  // Resolve actor profiles and post captions in two batched queries
+  const actorIds = [...new Set(list.map((n) => n.actor_id).filter(Boolean))]
+  const postIds = [...new Set(list.map((n) => n.post_id).filter(Boolean))]
+
+  const [actorsRes, postsRes] = await Promise.all([
+    actorIds.length
+      ? fetch(
+          `${SUPABASE_URL}/rest/v1/profiles?id=in.(${actorIds.join(',')})&select=id,username,full_name,avatar_url`,
+          { headers: { ...authHeaders(true) } },
+        )
+      : null,
+    postIds.length
+      ? fetch(
+          `${SUPABASE_URL}/rest/v1/posts?id=in.(${postIds.join(',')})&select=id,caption`,
+          { headers: { ...authHeaders(true) } },
+        )
+      : null,
+  ])
+
+  const actors: Record<string, Record<string, unknown>> = {}
+  if (actorsRes?.ok) {
+    for (const p of await actorsRes.json().catch(() => [])) actors[p.id] = p
+  }
+  const captions: Record<string, string> = {}
+  if (postsRes?.ok) {
+    for (const p of await postsRes.json().catch(() => [])) captions[p.id] = p.caption || ''
+  }
+
+  const notifications = list.map((n) => {
+    const actor = actors[n.actor_id] || {}
+    return {
+      id: n.id,
+      type: n.type,
+      read: n.read,
+      created_at: n.created_at,
+      actor: {
+        username: actor.username || '',
+        full_name: actor.full_name || '',
+        avatar_url: actor.avatar_url || '',
+      },
+      post_public_id: n.post_public_id || null,
+      post_caption: n.post_id ? captions[n.post_id] || null : null,
+      conversation_id: n.conversation_id || null,
+    }
+  })
+
+  const unreadCount = list.filter((n) => !n.read).length
+  return jsonResponse({ notifications, unread_count: unreadCount }, 200, {}, [], origin)
+}
+
+const handleMarkNotificationsRead = async (req: Request) => {
+  const origin = req.headers.get('origin')
+  const user = await requireUser(req)
+  if (!user) return jsonResponse({ error: 'Unauthorized' }, 401, {}, [], origin)
+
+  const res = await fetch(`${SUPABASE_URL}/rest/v1/notifications?user_id=eq.${user.id}&read=eq.false`, {
+    method: 'PATCH',
+    headers: { ...authHeaders(true), Prefer: 'return=minimal' },
+    body: JSON.stringify({ read: true }),
+  })
+  if (!res.ok) return jsonResponse({ error: 'Failed to update notifications' }, 500, {}, [], origin)
+  return jsonResponse({ status: 'read' }, 200, {}, [], origin)
+}
+
 const fetchProfileBrief = async (userId: string) => {
   const res = await fetch(
     `${SUPABASE_URL}/rest/v1/profiles?id=eq.${userId}&select=id,username,full_name,avatar_url&limit=1`,
@@ -1097,11 +1192,23 @@ const handleTogglePostLike = async (req: Request) => {
       method: 'DELETE',
       headers: { ...authHeaders(true) },
     })
+    // Unlike also retracts the notification
+    await fetch(
+      `${SUPABASE_URL}/rest/v1/notifications?user_id=eq.${post.creator_id}&actor_id=eq.${user.id}&post_id=eq.${post.id}&type=eq.like`,
+      { method: 'DELETE', headers: { ...authHeaders(true) } },
+    ).catch(() => {})
   } else {
     await fetch(`${SUPABASE_URL}/rest/v1/post_likes`, {
       method: 'POST',
       headers: { ...authHeaders(true), Prefer: 'return=minimal,resolution=ignore-duplicates' },
       body: JSON.stringify([{ post_id: post.id, user_id: user.id }]),
+    })
+    await createNotification({
+      user_id: post.creator_id,
+      actor_id: user.id,
+      type: 'like',
+      post_id: post.id,
+      post_public_id: post.public_id,
     })
   }
 
@@ -1347,6 +1454,14 @@ const handleVerifyPostPayment = async (req: Request) => {
     return jsonResponse({ error: 'Failed to record payment' }, 500, {}, [], origin)
   }
 
+  await createNotification({
+    user_id: post.creator_id,
+    actor_id: user.id,
+    type: 'purchase',
+    post_id: post.id,
+    post_public_id: post.public_id,
+  })
+
   return jsonResponse({ status: 'paid' }, 200, {}, [], origin)
 }
 
@@ -1527,7 +1642,16 @@ const handleCreateConversation = async (req: Request) => {
     return jsonResponse({ error: 'Failed to start conversation' }, 500, {}, [], origin)
   }
   const rows = await insertRes.json().catch(() => [])
-  return jsonResponse({ conversation_id: rows[0]?.id, existing: false }, 200, {}, [], origin)
+  const conversationId = rows[0]?.id
+  if (conversationId) {
+    await createNotification({
+      user_id: target.id,
+      actor_id: user.id,
+      type: 'request',
+      conversation_id: conversationId,
+    })
+  }
+  return jsonResponse({ conversation_id: conversationId, existing: false }, 200, {}, [], origin)
 }
 
 const handleAcceptConversation = async (req: Request) => {
@@ -1544,6 +1668,12 @@ const handleAcceptConversation = async (req: Request) => {
     method: 'PATCH',
     headers: { ...authHeaders(true), Prefer: 'return=minimal' },
     body: JSON.stringify({ status: 'accepted' }),
+  })
+  await createNotification({
+    user_id: convo.created_by as string,
+    actor_id: user.id,
+    type: 'accept',
+    conversation_id: convo.id as string,
   })
   return jsonResponse({ status: 'accepted' }, 200, {}, [], origin)
 }
@@ -1711,6 +1841,15 @@ const handleSendMessage = async (req: Request) => {
     headers: { ...authHeaders(true), Prefer: 'return=minimal' },
     body: JSON.stringify(patch),
   }).catch(() => {})
+  if (patch.status === 'accepted') {
+    // Replying auto-accepts the request; tell the requester
+    await createNotification({
+      user_id: convo.created_by as string,
+      actor_id: user.id,
+      type: 'accept',
+      conversation_id: convo.id as string,
+    })
+  }
 
   const rows = await insertRes.json().catch(() => [])
   const message = rows[0] ? await decorateMessage(rows[0], user.id) : null
@@ -1995,6 +2134,8 @@ serve(async (req) => {
   if (isRoute('post-report') && req.method === 'POST') return handleReportPost(req)
   if (isRoute('post-checkout') && req.method === 'POST') return handlePostCheckout(req)
   if (isRoute('post-verify-payment') && req.method === 'POST') return handleVerifyPostPayment(req)
+  if (isRoute('notifications') && req.method === 'GET') return handleGetNotifications(req)
+  if (isRoute('notifications-read') && req.method === 'POST') return handleMarkNotificationsRead(req)
   if (isRoute('conversations') && req.method === 'GET') return handleGetConversations(req)
   if (isRoute('conversations') && req.method === 'POST') return handleCreateConversation(req)
   if (isRoute('conversation-accept') && req.method === 'POST') return handleAcceptConversation(req)

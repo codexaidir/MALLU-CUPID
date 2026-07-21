@@ -305,6 +305,29 @@ export async function getConversations(): Promise<{ conversations?: Conversation
   return apiGet('/conversations');
 }
 
+export interface NotificationItem {
+  id: string;
+  type: 'like' | 'purchase' | 'request' | 'accept';
+  read: boolean;
+  created_at: string;
+  actor: { username: string; full_name: string | null; avatar_url: string | null };
+  post_public_id: string | null;
+  post_caption: string | null;
+  conversation_id: string | null;
+}
+
+export async function getNotifications(): Promise<{
+  notifications?: NotificationItem[];
+  unread_count?: number;
+  error?: string;
+}> {
+  return apiGet('/notifications');
+}
+
+export async function markNotificationsRead(): Promise<{ status?: string; error?: string }> {
+  return apiPost('/notifications-read', {});
+}
+
 export async function searchUsers(q: string): Promise<{ users?: { username: string; full_name: string; avatar_url: string }[]; error?: string }> {
   return apiGet(`/user-search?q=${encodeURIComponent(q)}`);
 }
