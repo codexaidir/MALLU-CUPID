@@ -828,11 +828,44 @@ const uploadAvatar = async (
   return { ok: true, url }
 }
 
+// Per-request Set-Cookie values produced when requireUser silently refreshes
+// an expired access token. Attached to the final Response in the serve wrapper.
+const authCookiesByRequest = new WeakMap<Request, string[]>()
+
+const rememberAuthCookies = (req: Request, cookies: string[]) => {
+  if (!cookies.length) return
+  authCookiesByRequest.set(req, [...(authCookiesByRequest.get(req) || []), ...cookies])
+}
+
+const attachAuthCookies = (req: Request, response: Response) => {
+  const cookies = authCookiesByRequest.get(req)
+  if (!cookies?.length) return response
+  authCookiesByRequest.delete(req)
+  const headers = new Headers(response.headers)
+  for (const cookie of cookies) headers.append('Set-Cookie', cookie)
+  return new Response(response.body, { status: response.status, statusText: response.statusText, headers })
+}
+
 const requireUser = async (req: Request) => {
   const cookies = serializeCookies(req.headers.get('cookie') || '')
   const accessToken = cookies['sb-access-token'] ? decodeURIComponent(cookies['sb-access-token']) : ''
-  if (!accessToken) return null
-  const user = await fetchUser(accessToken)
+  const refreshToken = cookies['sb-refresh-token'] ? decodeURIComponent(cookies['sb-refresh-token']) : ''
+
+  if (accessToken) {
+    const user = await fetchUser(accessToken)
+    if (user?.id) return user
+  }
+
+  if (!refreshToken) return null
+  const refreshData = await refreshSession(refreshToken)
+  if (refreshData.error || !refreshData.access_token) return null
+
+  rememberAuthCookies(req, [
+    buildCookie('sb-access-token', refreshData.access_token, refreshData.expires_in || 3600),
+    buildCookie('sb-refresh-token', refreshData.refresh_token || refreshToken, 60 * 60 * 24 * 30),
+  ])
+
+  const user = await fetchUser(refreshData.access_token)
   return user?.id ? user : null
 }
 
@@ -891,6 +924,8 @@ const decoratePosts = async (posts: Array<Record<string, unknown>>) => {
       media_count: paths.length,
       is_paid: post.is_paid,
       price: post.price,
+      like_count: Number(post.like_count) || 0,
+      view_count: Number(post.view_count) || 0,
       created_at: post.created_at,
     }
   })
@@ -926,7 +961,7 @@ const handlePublicProfile = async (req: Request, url: URL) => {
   const countHeaders = { ...authHeaders(true), Prefer: 'count=exact', Range: '0-0' }
   const [postsRes, followersRes, postCountRes] = await Promise.all([
     fetch(
-      `${SUPABASE_URL}/rest/v1/posts?creator_id=eq.${profile.id}&select=public_id,media_type,media_paths,is_paid,price,created_at&order=created_at.desc&limit=60`,
+      `${SUPABASE_URL}/rest/v1/posts?creator_id=eq.${profile.id}&select=public_id,media_type,media_paths,is_paid,price,like_count,view_count,created_at&order=created_at.desc&limit=60`,
       { headers: { ...authHeaders(true) } },
     ),
     fetch(`${SUPABASE_URL}/rest/v1/follows?following_id=eq.${profile.id}&select=follower_id`, {
@@ -962,6 +997,8 @@ const handlePublicProfile = async (req: Request, url: URL) => {
       price: p.is_paid === true ? p.price : 0,
       media_url: p.is_paid === true ? '' : (signed[paths[0]] || ''),
       media_count: paths.length,
+      like_count: Number(p.like_count) || 0,
+      view_count: Number(p.view_count) || 0,
     }
   })
 
@@ -1018,25 +1055,17 @@ const handlePublicFollow = async (req: Request) => {
   if (!creator) return jsonResponse({ error: 'Creator not found' }, 404, {}, [], origin)
   if (creator.id === user.id) return jsonResponse({ error: 'You cannot follow yourself' }, 400, {}, [], origin)
 
-  const existingRes = await fetch(
-    `${SUPABASE_URL}/rest/v1/follows?follower_id=eq.${user.id}&following_id=eq.${creator.id}&select=follower_id&limit=1`,
-    { headers: { ...authHeaders(true) } },
-  )
-  const existing = existingRes.ok ? await existingRes.json().catch(() => []) : []
-  const following = Array.isArray(existing) && existing.length > 0
-  if (following) {
-    await fetch(
-      `${SUPABASE_URL}/rest/v1/follows?follower_id=eq.${user.id}&following_id=eq.${creator.id}`,
-      { method: 'DELETE', headers: { ...authHeaders(true) } },
-    )
-  } else {
-    await fetch(`${SUPABASE_URL}/rest/v1/follows`, {
-      method: 'POST',
-      headers: { ...authHeaders(true), Prefer: 'return=minimal,resolution=ignore-duplicates' },
-      body: JSON.stringify([{ follower_id: user.id, following_id: creator.id }]),
-    })
+  const toggleRes = await fetch(`${SUPABASE_URL}/rest/v1/rpc/toggle_creator_follow`, {
+    method: 'POST',
+    headers: { ...authHeaders(true) },
+    body: JSON.stringify({ p_follower_id: user.id, p_creator_id: creator.id }),
+  })
+  if (!toggleRes.ok) {
+    console.error('Follow toggle failed:', await toggleRes.text().catch(() => ''))
+    return jsonResponse({ error: 'Failed to update follow' }, 500, {}, [], origin)
   }
-  return jsonResponse({ following: !following }, 200, {}, [], origin)
+  const following = await toggleRes.json().catch(() => false)
+  return jsonResponse({ following: following === true }, 200, {}, [], origin)
 }
 
 const handlePostUploadUrls = async (req: Request) => {
@@ -1184,7 +1213,7 @@ const handleGetProfile = async (req: Request) => {
       headers: { ...authHeaders(true), Prefer: 'count=exact', Range: '0-0' },
     }),
     fetch(
-      `${SUPABASE_URL}/rest/v1/posts?creator_id=eq.${user.id}&select=id,public_id,caption,media_type,media_paths,is_paid,price,created_at&order=created_at.desc&limit=50`,
+      `${SUPABASE_URL}/rest/v1/posts?creator_id=eq.${user.id}&select=id,public_id,caption,media_type,media_paths,is_paid,price,like_count,view_count,created_at&order=created_at.desc&limit=50`,
       { headers: { ...authHeaders(true) } },
     ),
   ])
@@ -1425,7 +1454,7 @@ const REPORT_REASONS = [
 const fetchPostByPublicId = async (publicId: string) => {
   if (!/^[A-Za-z0-9]{12}$/.test(publicId)) return null
   const res = await fetch(
-    `${SUPABASE_URL}/rest/v1/posts?public_id=eq.${encodeURIComponent(publicId)}&select=id,creator_id,public_id,caption,media_type,media_paths,is_paid,price,created_at&limit=1`,
+    `${SUPABASE_URL}/rest/v1/posts?public_id=eq.${encodeURIComponent(publicId)}&select=id,creator_id,public_id,caption,media_type,media_paths,is_paid,price,like_count,view_count,created_at&limit=1`,
     { headers: { ...authHeaders(true) } },
   )
   if (!res.ok) return null
@@ -1464,14 +1493,20 @@ const handleGetNotifications = async (req: Request) => {
   const rows = await res.json().catch(() => [])
   const list = Array.isArray(rows) ? rows : []
 
-  // Resolve actor profiles and post captions in two batched queries
+  // Resolve creator profiles, consumer account names, and post captions.
   const actorIds = [...new Set(list.map((n) => n.actor_id).filter(Boolean))]
   const postIds = [...new Set(list.map((n) => n.post_id).filter(Boolean))]
 
-  const [actorsRes, postsRes] = await Promise.all([
+  const [actorsRes, actorAccountsRes, postsRes] = await Promise.all([
     actorIds.length
       ? fetch(
           `${SUPABASE_URL}/rest/v1/profiles?id=in.(${actorIds.join(',')})&select=id,username,full_name,avatar_url`,
+          { headers: { ...authHeaders(true) } },
+        )
+      : null,
+    actorIds.length
+      ? fetch(
+          `${SUPABASE_URL}/rest/v1/user_accounts?id=in.(${actorIds.join(',')})&select=id,name`,
           { headers: { ...authHeaders(true) } },
         )
       : null,
@@ -1486,6 +1521,18 @@ const handleGetNotifications = async (req: Request) => {
   const actors: Record<string, Record<string, unknown>> = {}
   if (actorsRes?.ok) {
     for (const p of await actorsRes.json().catch(() => [])) actors[p.id] = p
+  }
+  if (actorAccountsRes?.ok) {
+    for (const account of await actorAccountsRes.json().catch(() => [])) {
+      if (!actors[account.id]) {
+        actors[account.id] = {
+          id: account.id,
+          username: account.name || 'MalluCupid user',
+          full_name: account.name || 'MalluCupid user',
+          avatar_url: '',
+        }
+      }
+    }
   }
   const captions: Record<string, string> = {}
   if (postsRes?.ok) {
@@ -1533,9 +1580,22 @@ const fetchProfileBrief = async (userId: string) => {
     `${SUPABASE_URL}/rest/v1/profiles?id=eq.${userId}&select=id,username,full_name,avatar_url&limit=1`,
     { headers: { ...authHeaders(true) } },
   )
-  if (!res.ok) return null
-  const rows = await res.json().catch(() => [])
-  return Array.isArray(rows) && rows.length ? rows[0] : null
+  const rows = res.ok ? await res.json().catch(() => []) : []
+  if (Array.isArray(rows) && rows.length) return rows[0]
+
+  const accountRes = await fetch(
+    `${SUPABASE_URL}/rest/v1/user_accounts?id=eq.${userId}&select=id,name&limit=1`,
+    { headers: { ...authHeaders(true) } },
+  )
+  const accounts = accountRes.ok ? await accountRes.json().catch(() => []) : []
+  const account = Array.isArray(accounts) && accounts.length ? accounts[0] : null
+  if (!account) return null
+  return {
+    id: account.id,
+    username: account.name || 'MalluCupid user',
+    full_name: account.name || 'MalluCupid user',
+    avatar_url: '',
+  }
 }
 
 const hasPaidForPost = async (postId: string, userId: string) => {
@@ -1546,17 +1606,6 @@ const hasPaidForPost = async (postId: string, userId: string) => {
   if (!res.ok) return false
   const rows = await res.json().catch(() => [])
   return Array.isArray(rows) && rows.length > 0
-}
-
-const countLikes = async (postId: string) => {
-  const res = await fetch(`${SUPABASE_URL}/rest/v1/post_likes?post_id=eq.${postId}&select=user_id`, {
-    method: 'HEAD',
-    headers: { ...authHeaders(true), Prefer: 'count=exact', Range: '0-0' },
-  })
-  if (!res.ok) return 0
-  const range = res.headers.get('content-range') || ''
-  const total = range.split('/')[1]
-  return total && total !== '*' ? Number(total) || 0 : 0
 }
 
 const handleGetPost = async (req: Request, url: URL) => {
@@ -1572,12 +1621,20 @@ const handleGetPost = async (req: Request, url: URL) => {
   // Access is decided server-side only: owner, free post, or a recorded paid purchase.
   const hasAccess = isOwner || post.is_paid !== true || (await hasPaidForPost(post.id, user.id))
 
-  const [owner, likeCount, likedRes] = await Promise.all([
+  const viewCountPromise = isOwner
+    ? Promise.resolve(Number(post.view_count) || 0)
+    : fetch(`${SUPABASE_URL}/rest/v1/rpc/record_post_view`, {
+        method: 'POST',
+        headers: { ...authHeaders(true) },
+        body: JSON.stringify({ p_post_id: post.id, p_viewer_id: user.id }),
+      }).then((res) => res.ok ? res.json() : Number(post.view_count) || 0).catch(() => Number(post.view_count) || 0)
+
+  const [owner, likedRes, viewCount] = await Promise.all([
     fetchProfileBrief(post.creator_id),
-    countLikes(post.id),
     fetch(`${SUPABASE_URL}/rest/v1/post_likes?post_id=eq.${post.id}&user_id=eq.${user.id}&select=user_id&limit=1`, {
       headers: { ...authHeaders(true) },
     }),
+    viewCountPromise,
   ])
 
   const likedRows = likedRes.ok ? await likedRes.json().catch(() => []) : []
@@ -1602,7 +1659,8 @@ const handleGetPost = async (req: Request, url: URL) => {
       created_at: post.created_at,
       is_owner: isOwner,
       has_access: hasAccess,
-      like_count: likeCount,
+      like_count: Number(post.like_count) || 0,
+      view_count: Number(viewCount) || 0,
       liked_by_me: likedByMe,
       owner: owner
         ? { username: owner.username, full_name: owner.full_name, avatar_url: owner.avatar_url }
@@ -1620,29 +1678,23 @@ const handleTogglePostLike = async (req: Request) => {
   const post = await fetchPostByPublicId(typeof body.public_id === 'string' ? body.public_id : '')
   if (!post) return jsonResponse({ error: 'Post not found' }, 404, {}, [], origin)
 
-  const existingRes = await fetch(
-    `${SUPABASE_URL}/rest/v1/post_likes?post_id=eq.${post.id}&user_id=eq.${user.id}&select=user_id&limit=1`,
-    { headers: { ...authHeaders(true) } },
-  )
-  const existing = existingRes.ok ? await existingRes.json().catch(() => []) : []
-  const alreadyLiked = Array.isArray(existing) && existing.length > 0
+  const hasAccess = post.creator_id === user.id || post.is_paid !== true || await hasPaidForPost(post.id, user.id)
+  if (!hasAccess) return jsonResponse({ error: 'Unlock this post before liking it' }, 403, {}, [], origin)
 
-  if (alreadyLiked) {
-    await fetch(`${SUPABASE_URL}/rest/v1/post_likes?post_id=eq.${post.id}&user_id=eq.${user.id}`, {
-      method: 'DELETE',
-      headers: { ...authHeaders(true) },
-    })
-    // Unlike also retracts the notification
-    await fetch(
-      `${SUPABASE_URL}/rest/v1/notifications?user_id=eq.${post.creator_id}&actor_id=eq.${user.id}&post_id=eq.${post.id}&type=eq.like`,
-      { method: 'DELETE', headers: { ...authHeaders(true) } },
-    ).catch(() => {})
-  } else {
-    await fetch(`${SUPABASE_URL}/rest/v1/post_likes`, {
-      method: 'POST',
-      headers: { ...authHeaders(true), Prefer: 'return=minimal,resolution=ignore-duplicates' },
-      body: JSON.stringify([{ post_id: post.id, user_id: user.id }]),
-    })
+  const toggleRes = await fetch(`${SUPABASE_URL}/rest/v1/rpc/toggle_post_like`, {
+    method: 'POST',
+    headers: { ...authHeaders(true) },
+    body: JSON.stringify({ p_post_id: post.id, p_user_id: user.id }),
+  })
+  if (!toggleRes.ok) {
+    console.error('Post like toggle failed:', await toggleRes.text().catch(() => ''))
+    return jsonResponse({ error: 'Failed to update like' }, 500, {}, [], origin)
+  }
+  const toggleRows = await toggleRes.json().catch(() => [])
+  const result = Array.isArray(toggleRows) ? toggleRows[0] : null
+  const liked = result?.liked === true
+
+  if (liked) {
     await createNotification({
       user_id: post.creator_id,
       actor_id: user.id,
@@ -1650,10 +1702,14 @@ const handleTogglePostLike = async (req: Request) => {
       post_id: post.id,
       post_public_id: post.public_id,
     })
+  } else {
+    await fetch(
+      `${SUPABASE_URL}/rest/v1/notifications?user_id=eq.${post.creator_id}&actor_id=eq.${user.id}&post_id=eq.${post.id}&type=eq.like`,
+      { method: 'DELETE', headers: { ...authHeaders(true) } },
+    ).catch(() => {})
   }
 
-  const likeCount = await countLikes(post.id)
-  return jsonResponse({ liked: !alreadyLiked, like_count: likeCount }, 200, {}, [], origin)
+  return jsonResponse({ liked, like_count: Number(result?.total) || 0 }, 200, {}, [], origin)
 }
 
 const handleUpdatePost = async (req: Request) => {
@@ -2114,8 +2170,11 @@ const handleGetConversations = async (req: Request) => {
   const peerIds = [...new Set(convos.map((c) => conversationPeer(c, user.id)))].join(',')
   const notDeletedForMe = `deleted_for=not.cs.${encodeURIComponent(`{${user.id}}`)}`
 
-  const [profilesRes, messagesRes] = await Promise.all([
+  const [profilesRes, accountsRes, messagesRes] = await Promise.all([
     fetch(`${SUPABASE_URL}/rest/v1/profiles?id=in.(${peerIds})&select=id,username,full_name,avatar_url`, {
+      headers: { ...authHeaders(true) },
+    }),
+    fetch(`${SUPABASE_URL}/rest/v1/user_accounts?id=in.(${peerIds})&select=id,name`, {
       headers: { ...authHeaders(true) },
     }),
     fetch(
@@ -2126,6 +2185,17 @@ const handleGetConversations = async (req: Request) => {
 
   const profiles = profilesRes.ok ? await profilesRes.json().catch(() => []) : []
   const profileMap = new Map((Array.isArray(profiles) ? profiles : []).map((p: { id: string }) => [p.id, p]))
+  const accounts = accountsRes.ok ? await accountsRes.json().catch(() => []) : []
+  for (const account of Array.isArray(accounts) ? accounts : []) {
+    if (!profileMap.has(account.id)) {
+      profileMap.set(account.id, {
+        id: account.id,
+        username: account.name || 'MalluCupid user',
+        full_name: account.name || 'MalluCupid user',
+        avatar_url: '',
+      })
+    }
+  }
   const allMessages = messagesRes.ok ? await messagesRes.json().catch(() => []) : []
 
   const items = []
@@ -2209,9 +2279,9 @@ const handleCreateConversation = async (req: Request) => {
     return jsonResponse({ conversation_id: existing[0].id, existing: true }, 200, {}, [], origin)
   }
 
-  const insertRes = await fetch(`${SUPABASE_URL}/rest/v1/conversations`, {
+  const insertRes = await fetch(`${SUPABASE_URL}/rest/v1/conversations?on_conflict=user_a,user_b`, {
     method: 'POST',
-    headers: { ...authHeaders(true), Prefer: 'return=representation' },
+    headers: { ...authHeaders(true), Prefer: 'resolution=ignore-duplicates,return=representation' },
     body: JSON.stringify([{ user_a: userA, user_b: userB, created_by: user.id, status: 'pending' }]),
   })
   if (!insertRes.ok) {
@@ -2219,8 +2289,19 @@ const handleCreateConversation = async (req: Request) => {
     return jsonResponse({ error: 'Failed to start conversation' }, 500, {}, [], origin)
   }
   const rows = await insertRes.json().catch(() => [])
-  const conversationId = rows[0]?.id
-  if (conversationId) {
+  let conversationId = rows[0]?.id
+  let created = Boolean(conversationId)
+  if (!conversationId) {
+    const racedRes = await fetch(
+      `${SUPABASE_URL}/rest/v1/conversations?user_a=eq.${userA}&user_b=eq.${userB}&select=id&limit=1`,
+      { headers: { ...authHeaders(true) } },
+    )
+    const raced = racedRes.ok ? await racedRes.json().catch(() => []) : []
+    conversationId = Array.isArray(raced) ? raced[0]?.id : undefined
+    created = false
+  }
+  if (!conversationId) return jsonResponse({ error: 'Failed to start conversation' }, 500, {}, [], origin)
+  if (created) {
     await createNotification({
       user_id: target.id,
       actor_id: user.id,
@@ -2228,7 +2309,7 @@ const handleCreateConversation = async (req: Request) => {
       conversation_id: conversationId,
     })
   }
-  return jsonResponse({ conversation_id: conversationId, existing: false }, 200, {}, [], origin)
+  return jsonResponse({ conversation_id: conversationId, existing: !created }, 200, {}, [], origin)
 }
 
 const handleAcceptConversation = async (req: Request) => {
@@ -2679,6 +2760,11 @@ const handleReset = async (req: Request) => {
 }
 
 serve(async (req) => {
+  const response = await routeRequest(req)
+  return attachAuthCookies(req, response)
+})
+
+const routeRequest = async (req: Request) => {
   if (req.method === 'OPTIONS') {
     return new Response(null, { status: 204, headers: getCorsHeaders(req.headers.get('origin')) })
   }
@@ -2736,4 +2822,4 @@ serve(async (req) => {
   if (isRoute('chat-report') && req.method === 'POST') return handleReportUser(req)
 
   return jsonResponse({ error: 'Not Found' }, 404, {}, [], req.headers.get('origin'))
-})
+}

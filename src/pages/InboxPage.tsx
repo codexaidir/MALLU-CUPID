@@ -25,7 +25,8 @@ export function chatListTime(iso: string): string {
 export default function InboxPage() {
   const { username } = useParams<{ username: string }>();
   const navigate = useNavigate();
-  const base = `/${username}`;
+  const chatPath = (conversationId: string) =>
+    username ? `/${username}/chat/${conversationId}` : `/user-chat/${conversationId}`;
 
   const [conversations, setConversations] = useState<ConversationItem[]>([]);
   const [isLoading, setIsLoading] = useState(true);
@@ -91,7 +92,7 @@ export default function InboxPage() {
     const response = await startConversation(targetUsername);
     setIsStarting("");
     if (response.conversation_id) {
-      navigate(`${base}/chat/${response.conversation_id}`);
+      navigate(chatPath(response.conversation_id));
     }
   };
 
@@ -102,9 +103,9 @@ export default function InboxPage() {
   ];
 
   return (
-    <div className="min-h-screen bg-white pt-14 pb-16 md:pt-8 md:pb-8">
+    <div className={`min-h-screen bg-white ${username ? "pt-14 pb-16 md:pt-8 md:pb-8" : "pt-6 pb-8"}`}>
       <main className="container mx-auto px-4 max-w-2xl py-4">
-        <h1 className="text-xl font-bold text-zinc-900 mb-4 hidden md:block">Inbox</h1>
+        <h1 className={`text-xl font-bold text-zinc-900 mb-4 ${username ? "hidden md:block" : ""}`}>Inbox</h1>
 
         {/* Search */}
         <div className="relative mb-4">
@@ -149,7 +150,7 @@ export default function InboxPage() {
                 key={convo.id}
                 initial={{ opacity: 0 }}
                 animate={{ opacity: 1 }}
-                onClick={() => navigate(`${base}/chat/${convo.id}`)}
+                onClick={() => navigate(chatPath(convo.id))}
                 className="w-full flex items-center gap-3 py-3 px-1 text-left hover:bg-zinc-50 rounded-xl transition-colors"
               >
                 <div className="w-12 h-12 rounded-full overflow-hidden bg-zinc-200 shrink-0">

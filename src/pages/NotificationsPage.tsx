@@ -79,6 +79,7 @@ function NotificationRow({
   unread,
   onOpen,
 }: {
+  key?: React.Key;
   item: NotificationItem;
   unread: boolean;
   onOpen: (n: NotificationItem) => void;

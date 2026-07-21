@@ -35,7 +35,8 @@ const dayLabel = (iso: string) => {
 export default function ChatPage() {
   const { username, conversationId } = useParams<{ username: string; conversationId: string }>();
   const navigate = useNavigate();
-  const goBack = () => (username ? navigate(`/${username}/inbox`) : navigate(-1));
+  const inboxPath = username ? `/${username}/inbox` : "/user-inbox";
+  const goBack = () => navigate(inboxPath);
 
   const [conversation, setConversation] = useState<ChatConversation | null>(null);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
@@ -215,7 +216,7 @@ export default function ChatPage() {
     if (!conversationId || isBusy) return;
     setIsBusy(true);
     await deleteChat(conversationId, mode);
-    navigate(username ? `/${username}/inbox` : -1, { replace: true });
+    navigate(inboxPath, { replace: true });
   };
 
   const handleBlockToggle = async () => {

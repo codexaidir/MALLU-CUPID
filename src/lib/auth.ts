@@ -129,6 +129,8 @@ export interface CreatorPost {
   media_count: number;
   is_paid: boolean;
   price: number;
+  like_count: number;
+  view_count: number;
   created_at: string;
 }
 
@@ -247,6 +249,7 @@ export interface PostDetail {
   is_owner: boolean;
   has_access: boolean;
   like_count: number;
+  view_count: number;
   liked_by_me: boolean;
   owner: { username: string; full_name: string | null; avatar_url: string | null } | null;
 }
@@ -356,6 +359,8 @@ export interface PublicProfilePost {
   price: number;
   media_url: string;
   media_count: number;
+  like_count: number;
+  view_count: number;
 }
 
 export interface PublicProfileData {

@@ -137,6 +137,7 @@ export default function App() {
             <Route path="/userpasswordreset" element={<UserPasswordReset />} />
             <Route path="/view/:postId" element={<MediaViewerPage />} />
             <Route path="/payment-confirmation" element={<PaymentConfirmationPage />} />
+            <Route path="/user-inbox" element={<InboxPage />} />
             <Route path="/user-chat/:conversationId" element={<ChatPage />} />
 
             {/* Legacy paths redirect to /<username>/... */}

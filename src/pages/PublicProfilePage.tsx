@@ -3,7 +3,7 @@ import { useNavigate, useParams } from "react-router-dom";
 import { motion, AnimatePresence } from "motion/react";
 import {
   Download, Grid, Heart, LayoutDashboard, Loader2, LockKeyhole,
-  MessageCircle, MonitorX, Play, PlaySquare, Share, UserPlus, X,
+  MessageCircle, MonitorX, Play, PlaySquare, Share, UserPlus, X, Eye,
 } from "lucide-react";
 import {
   checkoutPost, getPost, getPublicProfile, startConversation, togglePublicFollow,
@@ -141,18 +141,66 @@ export default function PublicProfilePage() {
     };
   }, [data]);
 
+  // Swap in a per-creator manifest so "Install" opens this creator's page
+  // (https://www.mallucupid.com/<username><serial>), not the homepage.
+  useEffect(() => {
+    if (!data) return;
+    const link = document.querySelector<HTMLLinkElement>('link[rel="manifest"]');
+    if (!link) return;
+    const originalHref = link.href;
+    const creatorPath = `/${slug}`;
+    const manifest = {
+      name: `${data.profile.full_name || data.profile.username} | MalluCupid`,
+      short_name: data.profile.username,
+      description: "Follow creators, chat, and unlock exclusive content.",
+      start_url: `${location.origin}${creatorPath}`,
+      scope: `${location.origin}/`,
+      display: "standalone",
+      background_color: "#ffffff",
+      theme_color: "#f43f5e",
+      icons: [
+        { src: `${location.origin}/mallucupid-icon.svg`, sizes: "192x192", type: "image/svg+xml", purpose: "any maskable" },
+        { src: `${location.origin}/mallucupid-icon.svg`, sizes: "512x512", type: "image/svg+xml", purpose: "any maskable" },
+      ],
+    };
+    const blobUrl = URL.createObjectURL(
+      new Blob([JSON.stringify(manifest)], { type: "application/manifest+json" }),
+    );
+    link.href = blobUrl;
+    return () => {
+      link.href = originalHref;
+      URL.revokeObjectURL(blobUrl);
+    };
+  }, [data, slug]);
+
   const posts = useMemo(
     () => (data?.posts || []).filter((post) => post.media_type === tab),
     [data, tab],
   );
   const hero = data?.posts.find((post) => post.media_type === "image" && post.media_url);
   const userLogin = () => navigate(`/userlogin?redirect=${encodeURIComponent(slug)}`);
+  const openAccount = () => {
+    if (!user) return userLogin();
+    const role = user.user_metadata?.role;
+    const creatorUsername = user.user_metadata?.username;
+    if (role === "creator" && creatorUsername) {
+      navigate(`/${creatorUsername}`);
+      return;
+    }
+    navigate("/user-inbox");
+  };
+
+  // Server 401s are the final authority: a stale client session must never
+  // leave the user on the page thinking the action worked.
+  const isAuthError = (error?: string) =>
+    Boolean(error && /unauthorized|login required|login/i.test(error));
 
   const follow = async () => {
     if (!user) return userLogin();
     setActionLoading(true);
     const response = await togglePublicFollow(slug);
     setActionLoading(false);
+    if (isAuthError(response.error)) return userLogin();
     if (typeof response.following === "boolean") {
       setFollowing(response.following);
       setData((prev) =>
@@ -175,6 +223,7 @@ export default function PublicProfilePage() {
     setActionLoading(true);
     const response = await startConversation(data.profile.username);
     setActionLoading(false);
+    if (isAuthError(response.error)) return userLogin();
     if (response.conversation_id) navigate(`/user-chat/${response.conversation_id}`);
   };
 
@@ -186,12 +235,25 @@ export default function PublicProfilePage() {
     // Always ask the backend first. It is the only authority for ownership
     // and permanent purchase access.
     const detail = await getPost(post.public_id);
-    if (detail.post?.has_access || !post.is_paid) {
+    if (isAuthError(detail.error)) {
+      setActionLoading(false);
+      return userLogin();
+    }
+    if (detail.post?.has_access) {
       setActionLoading(false);
       navigate(`/view/${post.public_id}`);
       return;
     }
+    if (!post.is_paid) {
+      setActionLoading(false);
+      setPaymentError(detail.error || "Unable to open this post right now.");
+      return;
+    }
     const checkout = await checkoutPost(post.public_id);
+    if (isAuthError(checkout.error)) {
+      setActionLoading(false);
+      return userLogin();
+    }
     if (checkout.already_unlocked) {
       setActionLoading(false);
       navigate(`/view/${post.public_id}`);
@@ -260,7 +322,7 @@ export default function PublicProfilePage() {
             <div className="flex gap-4">
               <button
                 className="flex flex-col items-center text-[11px]"
-                onClick={user ? undefined : userLogin}
+                onClick={openAccount}
               >
                 <div className="w-7 h-7 rounded-full border border-white/80 flex items-center justify-center">
                   <LayoutDashboard className="w-4 h-4" />
@@ -408,6 +470,14 @@ export default function PublicProfilePage() {
                         ) : (
                           <img src={post.media_url} alt="" className="w-full h-full object-cover" />
                         )}
+                        <div className="absolute bottom-2 left-2 right-2 flex items-center gap-3 text-white text-xs font-semibold drop-shadow-md">
+                          <span className="flex items-center gap-1">
+                            <Heart className="w-3.5 h-3.5 fill-white" /> {post.like_count}
+                          </span>
+                          <span className="flex items-center gap-1">
+                            <Eye className="w-3.5 h-3.5" /> {post.view_count}
+                          </span>
+                        </div>
                       </div>
                       {post.is_paid && (
                         <div className="p-3 flex justify-between text-xs">

@@ -3,7 +3,7 @@ import { useNavigate, useParams } from "react-router-dom";
 import { motion, AnimatePresence } from "motion/react";
 import {
   ArrowLeft, MoreVertical, Heart, Pencil, Trash2, Flag, ChevronLeft, ChevronRight,
-  Play, Pause, Loader2, LockKeyhole, AlertCircle, X,
+  Play, Pause, Loader2, LockKeyhole, AlertCircle, X, Eye,
 } from "lucide-react";
 import {
   getPost, togglePostLike, deletePost, checkoutPost,
@@ -44,17 +44,25 @@ export default function MediaViewerPage() {
   const [currentTime, setCurrentTime] = useState(0);
   const [duration, setDuration] = useState(0);
 
+  const loginRedirect = useCallback(() => {
+    navigate(`/userlogin?redirect=${encodeURIComponent(`view/${postId}`)}`, { replace: true });
+  }, [navigate, postId]);
+
   const loadPost = useCallback(async () => {
     if (!postId) return;
     const response = await getPost(postId);
     if (response.post) {
       setPost(response.post);
       setError("");
+    } else if (response.error && /unauthorized|login/i.test(response.error)) {
+      // Security wall: post details and media are never available to guests.
+      loginRedirect();
+      return;
     } else {
       setError(response.error || "Failed to load post");
     }
     setIsLoading(false);
-  }, [postId]);
+  }, [postId, loginRedirect]);
 
   useEffect(() => {
     setIsLoading(true);
@@ -64,17 +72,20 @@ export default function MediaViewerPage() {
   const handleLike = async () => {
     if (!post || liking) return;
     setLiking(true);
-    // Optimistic update, corrected by the server response
+    const previous = post;
     setPost({
       ...post,
       liked_by_me: !post.liked_by_me,
-      like_count: post.like_count + (post.liked_by_me ? -1 : 1),
+      like_count: Math.max(0, post.like_count + (post.liked_by_me ? -1 : 1)),
     });
     const response = await togglePostLike(post.public_id);
     if (typeof response.like_count === "number") {
       setPost((prev) => prev
         ? { ...prev, like_count: response.like_count as number, liked_by_me: Boolean(response.liked) }
         : prev);
+    } else if (response.error) {
+      setPost(previous);
+      if (/unauthorized|login/i.test(response.error)) loginRedirect();
     }
     setLiking(false);
   };
@@ -98,6 +109,11 @@ export default function MediaViewerPage() {
     setIsPaying(true);
 
     const checkout = await checkoutPost(post.public_id);
+    if (checkout.error && /unauthorized|login/i.test(checkout.error)) {
+      setIsPaying(false);
+      loginRedirect();
+      return;
+    }
     if (checkout.already_unlocked) {
       await loadPost();
       setIsPaying(false);
@@ -416,6 +432,10 @@ export default function MediaViewerPage() {
             </button>
             <span className="text-white font-semibold text-sm">
               {post.like_count} {post.like_count === 1 ? "like" : "likes"}
+            </span>
+            <span className="flex items-center gap-1 text-white/80 text-sm ml-2">
+              <Eye className="w-4 h-4" />
+              {post.view_count} {post.view_count === 1 ? "view" : "views"}
             </span>
             <span className={`ml-auto text-[11px] font-bold px-2.5 py-1 rounded-full ${post.is_paid ? "bg-rose-500 text-white" : "bg-white/20 text-white"}`}>
               {post.is_paid ? `₹${post.price}` : "Free"}
