@@ -24,35 +24,35 @@ export async function apiGet(path: string) {
 }
 
 export async function login(email: string, password: string) {
-  return apiPost('/auth/login', { email, password });
+  return apiPost('/login', { email, password });
 }
 
 export async function logout() {
-  return apiPost('/auth/logout', {});
+  return apiPost('/logout', {});
 }
 
 export async function signup(email: string, password: string, username: string) {
-  return apiPost('/auth/signup', { email, password, username });
+  return apiPost('/signup', { email, password, username });
 }
 
 export async function verifyOtp(token: string) {
-  return apiPost('/auth/verify', { token });
+  return apiPost('/verify', { token });
 }
 
 export async function resendOtp(email: string) {
-  return apiPost('/auth/resend', { email });
+  return apiPost('/resend', { email });
 }
 
 export async function forgotPassword(email: string) {
-  return apiPost('/auth/forgot', { email });
+  return apiPost('/forgot', { email });
 }
 
 export async function resetPassword(token: string, password: string) {
-  return apiPost('/auth/reset', { token, password });
+  return apiPost('/reset', { token, password });
 }
 
 export async function getSession() {
-  return apiGet('/auth/session');
+  return apiGet('/session');
 }
 
 export async function updateProfile(data: {
@@ -60,5 +60,5 @@ export async function updateProfile(data: {
   bio?: string;
   avatar_url?: string;
 }) {
-  return apiPost('/auth/profile', data);
+  return apiPost('/profile', data);
 }

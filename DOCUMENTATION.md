@@ -67,12 +67,13 @@ The application uses URL-based pagination (React Router) with the following rout
 
 ## Auth updates
 
-- Signup now uses OTP: backend stores `email_verifications` and sends 6-digit code via Resend.
-- Verify endpoint creates Supabase user and `profiles` record, then sets HttpOnly session cookies.
-- Auth API is hosted as Supabase edge function; frontend must use `VITE_AUTH_API_URL` pointing to the deployed function, e.g. `https://rytulzgsuzgicmpvrrxn.supabase.co/functions/v1/auth`.
-- Signup email send failures now return 502 error (previously silently swallowed); Resend API errors logged in edge function logs.
-- Added `POST /auth/resend`: regenerates token for latest unused signup verification (by email) and re-sends via Resend.
-- Verify OTP page receives email via router navigation state from signup; Resend Code button calls `/auth/resend`. Redirects to `/signup` if no email in state.
-- Requires `AUTH_RESEND_API_KEY` (or `RESEND_API_KEY`) secret set on edge function and verified Resend sender domain for `AUTH_EMAIL_FROM`.
-
+- Signup OTP: stores `email_verifications`, sends 6-digit code via Resend; invalidates prior unused OTPs for same email.
+- Email send failures return 502 with Resend error detail; orphan verification rows are deleted on send failure.
+- `POST /resend` regenerates token and re-sends OTP for latest unused signup verification.
+- Verify creates auth user + `profiles`, sets HttpOnly cookies; `POST /profile` updates onboarding fields from session cookie.
+- Routes accept `/signup` and `/auth/signup` style (base URL: `VITE_AUTH_API_URL=.../functions/v1/auth`).
+- Frontend paths: `/signup`, `/verify`, `/resend`, `/login`, `/session`, `/profile` (no double `/auth`).
+- GoTrue error shape (`msg` / `error_code`) handled for login/forgot/reset.
+- Migrations `001`/`002` applied on remote. Secrets set: AUTH_* keys, CORS for mallucupid.com.
+- Resend OTP email delivery verified (`verification_sent` after valid `AUTH_RESEND_API_KEY`).
 
