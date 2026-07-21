@@ -18,6 +18,9 @@ import VerificationPage from "./pages/VerificationPage";
 import EditProfilePage from "./pages/EditProfilePage";
 import CreatorOnboardingPage from "./pages/CreatorOnboardingPage";
 import CreatePostPage from "./pages/CreatePostPage";
+import MediaViewerPage from "./pages/MediaViewerPage";
+import EditPostPage from "./pages/EditPostPage";
+import ReportPostPage from "./pages/ReportPostPage";
 import WalletPage from "./pages/WalletPage";
 import HelpPage from "./pages/HelpPage";
 import NotificationsPage from "./pages/NotificationsPage";
@@ -104,6 +107,9 @@ export default function App() {
               <Route index element={<DashboardPage />} />
               <Route path="edit-profile" element={<EditProfilePage />} />
               <Route path="create-post" element={<CreatePostPage />} />
+              <Route path="post/:postId" element={<MediaViewerPage />} />
+              <Route path="post/:postId/edit" element={<EditPostPage />} />
+              <Route path="post/:postId/report" element={<ReportPostPage />} />
               <Route path="verification" element={<VerificationPage />} />
               <Route path="wallet" element={<WalletPage />} />
               <Route path="help" element={<HelpPage />} />

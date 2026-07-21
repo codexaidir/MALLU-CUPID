@@ -893,6 +893,388 @@ const handleCreateSupportTicket = async (req: Request) => {
   return jsonResponse({ ticket: Array.isArray(rows) ? rows[0] : rows }, 200, {}, [], origin)
 }
 
+const RAZORPAY_KEY_ID = Deno.env.get('RAZORPAY_KEY_ID') || ''
+const RAZORPAY_KEY_SECRET = Deno.env.get('RAZORPAY_KEY_SECRET') || ''
+
+const REPORT_REASONS = [
+  'Nudity or sexual content',
+  'Harassment or bullying',
+  'Spam or scam',
+  'Violence or dangerous content',
+  'Hate speech',
+  'Intellectual property violation',
+  'Impersonation',
+  'Other',
+]
+
+const fetchPostByPublicId = async (publicId: string) => {
+  if (!/^[A-Za-z0-9]{12}$/.test(publicId)) return null
+  const res = await fetch(
+    `${SUPABASE_URL}/rest/v1/posts?public_id=eq.${encodeURIComponent(publicId)}&select=id,creator_id,public_id,caption,media_type,media_paths,is_paid,price,created_at&limit=1`,
+    { headers: { ...authHeaders(true) } },
+  )
+  if (!res.ok) return null
+  const rows = await res.json().catch(() => [])
+  return Array.isArray(rows) && rows.length ? rows[0] : null
+}
+
+const fetchProfileBrief = async (userId: string) => {
+  const res = await fetch(
+    `${SUPABASE_URL}/rest/v1/profiles?id=eq.${userId}&select=id,username,full_name,avatar_url&limit=1`,
+    { headers: { ...authHeaders(true) } },
+  )
+  if (!res.ok) return null
+  const rows = await res.json().catch(() => [])
+  return Array.isArray(rows) && rows.length ? rows[0] : null
+}
+
+const hasPaidForPost = async (postId: string, userId: string) => {
+  const res = await fetch(
+    `${SUPABASE_URL}/rest/v1/post_purchases?post_id=eq.${postId}&user_id=eq.${userId}&status=eq.paid&select=id&limit=1`,
+    { headers: { ...authHeaders(true) } },
+  )
+  if (!res.ok) return false
+  const rows = await res.json().catch(() => [])
+  return Array.isArray(rows) && rows.length > 0
+}
+
+const countLikes = async (postId: string) => {
+  const res = await fetch(`${SUPABASE_URL}/rest/v1/post_likes?post_id=eq.${postId}&select=user_id`, {
+    method: 'HEAD',
+    headers: { ...authHeaders(true), Prefer: 'count=exact', Range: '0-0' },
+  })
+  if (!res.ok) return 0
+  const range = res.headers.get('content-range') || ''
+  const total = range.split('/')[1]
+  return total && total !== '*' ? Number(total) || 0 : 0
+}
+
+const handleGetPost = async (req: Request, url: URL) => {
+  const origin = req.headers.get('origin')
+  const user = await requireUser(req)
+  if (!user) return jsonResponse({ error: 'Unauthorized' }, 401, {}, [], origin)
+
+  const publicId = url.searchParams.get('id') || ''
+  const post = await fetchPostByPublicId(publicId)
+  if (!post) return jsonResponse({ error: 'Post not found' }, 404, {}, [], origin)
+
+  const isOwner = post.creator_id === user.id
+  // Access is decided server-side only: owner, free post, or a recorded paid purchase.
+  const hasAccess = isOwner || post.is_paid !== true || (await hasPaidForPost(post.id, user.id))
+
+  const [owner, likeCount, likedRes] = await Promise.all([
+    fetchProfileBrief(post.creator_id),
+    countLikes(post.id),
+    fetch(`${SUPABASE_URL}/rest/v1/post_likes?post_id=eq.${post.id}&user_id=eq.${user.id}&select=user_id&limit=1`, {
+      headers: { ...authHeaders(true) },
+    }),
+  ])
+
+  const likedRows = likedRes.ok ? await likedRes.json().catch(() => []) : []
+  const likedByMe = Array.isArray(likedRows) && likedRows.length > 0
+
+  const paths = Array.isArray(post.media_paths) ? post.media_paths as string[] : []
+  let mediaUrls: string[] = []
+  if (hasAccess) {
+    const signed = await signMediaPaths(paths)
+    mediaUrls = paths.map((path) => signed[path]).filter(Boolean)
+  }
+
+  return jsonResponse({
+    post: {
+      public_id: post.public_id,
+      caption: post.caption,
+      media_type: post.media_type,
+      media_urls: mediaUrls,
+      media_count: paths.length,
+      is_paid: post.is_paid,
+      price: post.price,
+      created_at: post.created_at,
+      is_owner: isOwner,
+      has_access: hasAccess,
+      like_count: likeCount,
+      liked_by_me: likedByMe,
+      owner: owner
+        ? { username: owner.username, full_name: owner.full_name, avatar_url: owner.avatar_url }
+        : null,
+    },
+  }, 200, {}, [], origin)
+}
+
+const handleTogglePostLike = async (req: Request) => {
+  const origin = req.headers.get('origin')
+  const user = await requireUser(req)
+  if (!user) return jsonResponse({ error: 'Unauthorized' }, 401, {}, [], origin)
+
+  const body = await parseJson(req)
+  const post = await fetchPostByPublicId(typeof body.public_id === 'string' ? body.public_id : '')
+  if (!post) return jsonResponse({ error: 'Post not found' }, 404, {}, [], origin)
+
+  const existingRes = await fetch(
+    `${SUPABASE_URL}/rest/v1/post_likes?post_id=eq.${post.id}&user_id=eq.${user.id}&select=user_id&limit=1`,
+    { headers: { ...authHeaders(true) } },
+  )
+  const existing = existingRes.ok ? await existingRes.json().catch(() => []) : []
+  const alreadyLiked = Array.isArray(existing) && existing.length > 0
+
+  if (alreadyLiked) {
+    await fetch(`${SUPABASE_URL}/rest/v1/post_likes?post_id=eq.${post.id}&user_id=eq.${user.id}`, {
+      method: 'DELETE',
+      headers: { ...authHeaders(true) },
+    })
+  } else {
+    await fetch(`${SUPABASE_URL}/rest/v1/post_likes`, {
+      method: 'POST',
+      headers: { ...authHeaders(true), Prefer: 'return=minimal,resolution=ignore-duplicates' },
+      body: JSON.stringify([{ post_id: post.id, user_id: user.id }]),
+    })
+  }
+
+  const likeCount = await countLikes(post.id)
+  return jsonResponse({ liked: !alreadyLiked, like_count: likeCount }, 200, {}, [], origin)
+}
+
+const handleUpdatePost = async (req: Request) => {
+  const origin = req.headers.get('origin')
+  const user = await requireUser(req)
+  if (!user) return jsonResponse({ error: 'Unauthorized' }, 401, {}, [], origin)
+
+  const body = await parseJson(req)
+  const post = await fetchPostByPublicId(typeof body.public_id === 'string' ? body.public_id : '')
+  if (!post) return jsonResponse({ error: 'Post not found' }, 404, {}, [], origin)
+  if (post.creator_id !== user.id) return jsonResponse({ error: 'You can only edit your own posts' }, 403, {}, [], origin)
+
+  const caption = typeof body.caption === 'string' ? body.caption.trim() : ''
+  const isPaid = body.is_paid === true
+  const price = isPaid ? Number(body.price) : 0
+
+  if (caption.length > 200) return jsonResponse({ error: 'Caption must be 200 characters or fewer' }, 400, {}, [], origin)
+  if (isPaid && (!Number.isFinite(price) || price < 10)) {
+    return jsonResponse({ error: 'Minimum price is ₹10 for paid posts' }, 400, {}, [], origin)
+  }
+
+  // Update in place; the existing post id / public_id never changes.
+  const res = await fetch(`${SUPABASE_URL}/rest/v1/posts?id=eq.${post.id}`, {
+    method: 'PATCH',
+    headers: { ...authHeaders(true), Prefer: 'return=representation' },
+    body: JSON.stringify({ caption, is_paid: isPaid, price: isPaid ? price : 0 }),
+  })
+
+  if (!res.ok) {
+    console.error('Post update failed:', await res.text().catch(() => ''))
+    return jsonResponse({ error: 'Failed to update post' }, 500, {}, [], origin)
+  }
+
+  const rows = await res.json().catch(() => [])
+  const decorated = await decoratePosts(Array.isArray(rows) ? rows : [])
+  return jsonResponse({ status: 'post_updated', post: decorated[0] || null }, 200, {}, [], origin)
+}
+
+const handleDeletePost = async (req: Request) => {
+  const origin = req.headers.get('origin')
+  const user = await requireUser(req)
+  if (!user) return jsonResponse({ error: 'Unauthorized' }, 401, {}, [], origin)
+
+  const body = await parseJson(req)
+  const post = await fetchPostByPublicId(typeof body.public_id === 'string' ? body.public_id : '')
+  if (!post) return jsonResponse({ error: 'Post not found' }, 404, {}, [], origin)
+  if (post.creator_id !== user.id) return jsonResponse({ error: 'You can only delete your own posts' }, 403, {}, [], origin)
+
+  const paths = Array.isArray(post.media_paths) ? post.media_paths as string[] : []
+  if (paths.length) {
+    const removeRes = await fetch(`${SUPABASE_URL}/storage/v1/object/${POST_MEDIA_BUCKET}`, {
+      method: 'DELETE',
+      headers: { ...authHeaders(true) },
+      body: JSON.stringify({ prefixes: paths }),
+    })
+    if (!removeRes.ok) console.error('Failed to remove post media:', await removeRes.text().catch(() => ''))
+  }
+
+  const res = await fetch(`${SUPABASE_URL}/rest/v1/posts?id=eq.${post.id}`, {
+    method: 'DELETE',
+    headers: { ...authHeaders(true) },
+  })
+
+  if (!res.ok) {
+    console.error('Post delete failed:', await res.text().catch(() => ''))
+    return jsonResponse({ error: 'Failed to delete post' }, 500, {}, [], origin)
+  }
+
+  return jsonResponse({ status: 'post_deleted' }, 200, {}, [], origin)
+}
+
+const handleReportPost = async (req: Request) => {
+  const origin = req.headers.get('origin')
+  const user = await requireUser(req)
+  if (!user) return jsonResponse({ error: 'Unauthorized' }, 401, {}, [], origin)
+
+  const body = await parseJson(req)
+  const post = await fetchPostByPublicId(typeof body.public_id === 'string' ? body.public_id : '')
+  if (!post) return jsonResponse({ error: 'Post not found' }, 404, {}, [], origin)
+  if (post.creator_id === user.id) return jsonResponse({ error: 'You cannot report your own post' }, 400, {}, [], origin)
+
+  const reason = typeof body.reason === 'string' ? body.reason : ''
+  const details = typeof body.details === 'string' ? body.details.trim() : ''
+  if (!REPORT_REASONS.includes(reason)) return jsonResponse({ error: 'Select a valid reason' }, 400, {}, [], origin)
+  if (details.length > 750) return jsonResponse({ error: 'Additional details must be 750 characters or fewer' }, 400, {}, [], origin)
+
+  const [reporter, owner] = await Promise.all([
+    fetchProfileBrief(user.id),
+    fetchProfileBrief(post.creator_id),
+  ])
+
+  const res = await fetch(`${SUPABASE_URL}/rest/v1/post_reports`, {
+    method: 'POST',
+    headers: { ...authHeaders(true), Prefer: 'return=representation' },
+    body: JSON.stringify([{
+      post_id: post.id,
+      post_public_id: post.public_id,
+      owner_id: post.creator_id,
+      owner_username: owner?.username || '',
+      reporter_id: user.id,
+      reporter_username: reporter?.username || '',
+      reason,
+      details,
+    }]),
+  })
+
+  if (!res.ok) {
+    console.error('Post report failed:', await res.text().catch(() => ''))
+    return jsonResponse({ error: 'Failed to submit report' }, 500, {}, [], origin)
+  }
+
+  return jsonResponse({ status: 'report_submitted' }, 200, {}, [], origin)
+}
+
+const handlePostCheckout = async (req: Request) => {
+  const origin = req.headers.get('origin')
+  const user = await requireUser(req)
+  if (!user) return jsonResponse({ error: 'Unauthorized' }, 401, {}, [], origin)
+
+  const body = await parseJson(req)
+  const post = await fetchPostByPublicId(typeof body.public_id === 'string' ? body.public_id : '')
+  if (!post) return jsonResponse({ error: 'Post not found' }, 404, {}, [], origin)
+  if (post.creator_id === user.id) return jsonResponse({ already_unlocked: true }, 200, {}, [], origin)
+  if (post.is_paid !== true) return jsonResponse({ already_unlocked: true }, 200, {}, [], origin)
+  if (await hasPaidForPost(post.id, user.id)) return jsonResponse({ already_unlocked: true }, 200, {}, [], origin)
+
+  if (!RAZORPAY_KEY_ID || !RAZORPAY_KEY_SECRET) {
+    return jsonResponse({ error: 'Payments are not configured yet. Please try again later.' }, 503, {}, [], origin)
+  }
+
+  const amountPaise = Math.round(Number(post.price) * 100)
+  if (!Number.isFinite(amountPaise) || amountPaise < 100) {
+    return jsonResponse({ error: 'Invalid post price' }, 500, {}, [], origin)
+  }
+
+  const orderRes = await fetch('https://api.razorpay.com/v1/orders', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Basic ${btoa(`${RAZORPAY_KEY_ID}:${RAZORPAY_KEY_SECRET}`)}`,
+    },
+    body: JSON.stringify({
+      amount: amountPaise,
+      currency: 'INR',
+      receipt: `${post.public_id}-${user.id.slice(0, 8)}`,
+      notes: { post_public_id: post.public_id, buyer_id: user.id },
+    }),
+  })
+
+  if (!orderRes.ok) {
+    console.error('Razorpay order failed:', await orderRes.text().catch(() => ''))
+    return jsonResponse({ error: 'Failed to start payment. Please try again.' }, 502, {}, [], origin)
+  }
+
+  const order = await orderRes.json().catch(() => ({}))
+  if (!order?.id) return jsonResponse({ error: 'Failed to start payment. Please try again.' }, 502, {}, [], origin)
+
+  // One row per (post, user); re-initiating checkout refreshes the pending order id
+  const upsertRes = await fetch(`${SUPABASE_URL}/rest/v1/post_purchases?on_conflict=post_id,user_id`, {
+    method: 'POST',
+    headers: { ...authHeaders(true), Prefer: 'resolution=merge-duplicates,return=minimal' },
+    body: JSON.stringify([{
+      post_id: post.id,
+      user_id: user.id,
+      amount: post.price,
+      currency: 'INR',
+      razorpay_order_id: order.id,
+      status: 'created',
+    }]),
+  })
+
+  if (!upsertRes.ok) {
+    console.error('Purchase record failed:', await upsertRes.text().catch(() => ''))
+    return jsonResponse({ error: 'Failed to start payment. Please try again.' }, 500, {}, [], origin)
+  }
+
+  return jsonResponse({
+    key_id: RAZORPAY_KEY_ID,
+    order_id: order.id,
+    amount: amountPaise,
+    currency: 'INR',
+    post_public_id: post.public_id,
+  }, 200, {}, [], origin)
+}
+
+const hmacSha256Hex = async (secret: string, message: string) => {
+  const key = await crypto.subtle.importKey(
+    'raw',
+    new TextEncoder().encode(secret),
+    { name: 'HMAC', hash: 'SHA-256' },
+    false,
+    ['sign'],
+  )
+  const signature = await crypto.subtle.sign('HMAC', key, new TextEncoder().encode(message))
+  return Array.from(new Uint8Array(signature)).map((b) => b.toString(16).padStart(2, '0')).join('')
+}
+
+const handleVerifyPostPayment = async (req: Request) => {
+  const origin = req.headers.get('origin')
+  const user = await requireUser(req)
+  if (!user) return jsonResponse({ error: 'Unauthorized' }, 401, {}, [], origin)
+
+  const body = await parseJson(req)
+  const post = await fetchPostByPublicId(typeof body.public_id === 'string' ? body.public_id : '')
+  if (!post) return jsonResponse({ error: 'Post not found' }, 404, {}, [], origin)
+
+  const orderId = typeof body.razorpay_order_id === 'string' ? body.razorpay_order_id : ''
+  const paymentId = typeof body.razorpay_payment_id === 'string' ? body.razorpay_payment_id : ''
+  const signature = typeof body.razorpay_signature === 'string' ? body.razorpay_signature : ''
+  if (!orderId || !paymentId || !signature) return jsonResponse({ error: 'Missing payment details' }, 400, {}, [], origin)
+  if (!RAZORPAY_KEY_SECRET) return jsonResponse({ error: 'Payments are not configured yet' }, 503, {}, [], origin)
+
+  // The pending purchase row must match this user, post, and order
+  const purchaseRes = await fetch(
+    `${SUPABASE_URL}/rest/v1/post_purchases?post_id=eq.${post.id}&user_id=eq.${user.id}&razorpay_order_id=eq.${encodeURIComponent(orderId)}&select=id,status&limit=1`,
+    { headers: { ...authHeaders(true) } },
+  )
+  const purchaseRows = purchaseRes.ok ? await purchaseRes.json().catch(() => []) : []
+  const purchase = Array.isArray(purchaseRows) && purchaseRows.length ? purchaseRows[0] : null
+  if (!purchase) return jsonResponse({ error: 'No matching payment found' }, 404, {}, [], origin)
+  if (purchase.status === 'paid') return jsonResponse({ status: 'paid' }, 200, {}, [], origin)
+
+  const expected = await hmacSha256Hex(RAZORPAY_KEY_SECRET, `${orderId}|${paymentId}`)
+  if (expected !== signature) return jsonResponse({ error: 'Payment verification failed' }, 400, {}, [], origin)
+
+  const updateRes = await fetch(`${SUPABASE_URL}/rest/v1/post_purchases?id=eq.${purchase.id}`, {
+    method: 'PATCH',
+    headers: { ...authHeaders(true), Prefer: 'return=minimal' },
+    body: JSON.stringify({
+      status: 'paid',
+      razorpay_payment_id: paymentId,
+      paid_at: new Date().toISOString(),
+    }),
+  })
+
+  if (!updateRes.ok) {
+    console.error('Purchase confirm failed:', await updateRes.text().catch(() => ''))
+    return jsonResponse({ error: 'Failed to record payment' }, 500, {}, [], origin)
+  }
+
+  return jsonResponse({ status: 'paid' }, 200, {}, [], origin)
+}
+
 const handleForgot = async (req: Request) => {
   const origin = req.headers.get('origin')
   const { email } = await parseJson(req)
@@ -966,6 +1348,13 @@ serve(async (req) => {
   if (isRoute('payout-account') && req.method === 'POST') return handleSavePayoutAccount(req)
   if (isRoute('support-tickets') && req.method === 'GET') return handleGetSupportTickets(req)
   if (isRoute('support-tickets') && req.method === 'POST') return handleCreateSupportTicket(req)
+  if (isRoute('post') && req.method === 'GET') return handleGetPost(req, url)
+  if (isRoute('post-like') && req.method === 'POST') return handleTogglePostLike(req)
+  if (isRoute('post-update') && req.method === 'POST') return handleUpdatePost(req)
+  if (isRoute('post-delete') && req.method === 'POST') return handleDeletePost(req)
+  if (isRoute('post-report') && req.method === 'POST') return handleReportPost(req)
+  if (isRoute('post-checkout') && req.method === 'POST') return handlePostCheckout(req)
+  if (isRoute('post-verify-payment') && req.method === 'POST') return handleVerifyPostPayment(req)
 
   return jsonResponse({ error: 'Not Found' }, 404, {}, [], req.headers.get('origin'))
 })

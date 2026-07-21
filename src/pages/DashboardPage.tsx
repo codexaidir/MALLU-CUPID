@@ -159,11 +159,11 @@ export default function DashboardPage() {
                   </div>
                 </div>
               </div>
-              <div className="flex justify-center gap-12 border-t border-zinc-200 pt-4 mb-6">
+              <div className="flex justify-center gap-12 border-t border-zinc-200 pt-4 mb-2">
                 <div className="h-6 w-6 bg-zinc-200 rounded" />
                 <div className="h-6 w-6 bg-zinc-200 rounded" />
               </div>
-              <div className="grid grid-cols-2 gap-2 sm:gap-4 p-4 sm:p-0">
+              <div className="grid grid-cols-2 gap-2 sm:gap-4">
                 {[1, 2, 3, 4, 5, 6, 7, 8].map((i) => (
                   <div key={i} className="aspect-[4/5] bg-zinc-200 rounded-xl" />
                 ))}
@@ -282,7 +282,7 @@ export default function DashboardPage() {
               </motion.div>
 
               {/* Content Tabs */}
-              <div className="flex items-center justify-center gap-12 border-t border-zinc-200 pt-4 mb-6">
+              <div className="flex items-center justify-center gap-12 border-t border-zinc-200 pt-4 mb-2">
                 <button 
                   onClick={() => setActiveTab('grid')}
                   className={`flex items-center justify-center p-2 -mt-[18px] transition-colors border-t-2 ${activeTab === 'grid' ? 'text-zinc-900 border-zinc-900' : 'text-zinc-400 hover:text-zinc-900 border-transparent'}`}
@@ -302,20 +302,29 @@ export default function DashboardPage() {
                 initial={{ opacity: 0, y: 20 }}
                 animate={{ opacity: 1, y: 0 }}
                 transition={{ delay: 0.1 }}
-                className="grid grid-cols-2 gap-2 sm:gap-4 p-4 sm:p-0"
+                className="grid grid-cols-2 gap-2 sm:gap-4"
               >
                 {filteredPosts.map((post) => (
-                  <div key={post.id} className="relative bg-white border border-zinc-200 rounded-xl overflow-hidden shadow-sm flex flex-col group">
+                  <div
+                    key={post.id}
+                    onClick={() => navigate(`${base}/post/${post.public_id}`)}
+                    role="button"
+                    tabIndex={0}
+                    onKeyDown={(e) => { if (e.key === 'Enter') navigate(`${base}/post/${post.public_id}`); }}
+                    className="relative bg-white border border-zinc-200 rounded-xl overflow-hidden shadow-sm flex flex-col group cursor-pointer"
+                  >
                     <div className={`relative ${post.media_type === 'video' ? 'aspect-[9/16]' : 'aspect-[4/5]'} bg-black overflow-hidden shrink-0`}>
                       {post.media_type === 'video' ? (
-                        <video src={post.media_url} className={`w-full h-full object-contain bg-black ${post.is_paid ? 'blur-[40px] scale-110' : ''}`} controls={!post.is_paid} playsInline />
+                        <video src={post.media_url} className={`w-full h-full object-contain bg-black pointer-events-none ${post.is_paid ? 'blur-[40px] scale-110' : ''}`} playsInline muted preload="metadata" />
                       ) : (
                         <img src={post.media_url} alt={`Post ${post.id}`} className={`w-full h-full object-cover transition-transform duration-500 ${post.is_paid ? 'blur-[40px] scale-110' : 'group-hover:scale-105'}`} />
                       )}
 
                       {post.media_type === 'video' && !post.is_paid && (
-                        <div className="absolute top-2 left-2 p-1 bg-black/40 backdrop-blur-md rounded-full text-white">
-                          <Play className="w-4 h-4 fill-white" />
+                        <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
+                          <div className="p-2.5 bg-black/40 backdrop-blur-md rounded-full text-white">
+                            <Play className="w-5 h-5 fill-white" />
+                          </div>
                         </div>
                       )}
 
@@ -333,7 +342,10 @@ export default function DashboardPage() {
                           </div>
                           <span className="text-white font-bold text-sm sm:text-base drop-shadow-md mb-1">Exclusive Content</span>
                           <span className="text-white/80 text-xs drop-shadow-md mb-4">Unlock this post to view the content</span>
-                          <button className="px-5 py-2 bg-white hover:bg-zinc-100 text-zinc-900 rounded-full text-xs sm:text-sm font-bold transition-colors shadow-lg">
+                          <button
+                            onClick={(e) => { e.stopPropagation(); navigate(`${base}/post/${post.public_id}`); }}
+                            className="px-5 py-2 bg-white hover:bg-zinc-100 text-zinc-900 rounded-full text-xs sm:text-sm font-bold transition-colors shadow-lg"
+                          >
                             Unlock for ₹{post.price}
                           </button>
                         </div>

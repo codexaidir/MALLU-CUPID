@@ -119,3 +119,21 @@ The application uses URL-based pagination (React Router) with the following rout
 - Help page: create support tokens to contact admin, list with status badges and admin reply display.
 - Notifications and Inbox pages have clean empty states pending those systems.
 
+## Media viewer, likes, edit/delete/report & paid unlock (Razorpay)
+
+- Migration `007`: `post_likes` (PK post+user), `post_purchases` (one row per post+user, `status created/paid`, Razorpay order/payment ids, amount, `paid_at` — one-time, no expiry), `post_reports` (post id + public id, owner id/username, reporter id/username, reason, details <=750, timestamp). RLS: likes readable, purchases/reports readable by owner-user only; all writes go through the edge function (service role).
+- New endpoints (cookie auth, all server-side verified — the frontend is never trusted):
+  - `GET /post?id=<public_id>`: returns post + owner info, `like_count`, `liked_by_me`, `is_owner`, `has_access`. Signed `media_urls` are only included when access is granted (owner, free post, or a recorded `paid` purchase).
+  - `POST /post-like`: toggles a like, returns new count.
+  - `POST /post-update`: owner-only; edits caption (<=200), type free/paid, price (>=10). Updates the existing row — post id / public id never change.
+  - `POST /post-delete`: owner-only; removes storage media then the row (likes/purchases/reports cascade).
+  - `POST /post-report`: non-owners only; validates reason against the fixed list and details <=750; stores reporter + owner usernames/uuids, post ids, and timestamp.
+  - `POST /post-checkout`: creates a Razorpay order (amount from the DB price, INR) and a pending `post_purchases` row; returns `already_unlocked` for owners/free/already-paid. Requires `RAZORPAY_KEY_ID`/`RAZORPAY_KEY_SECRET` secrets — returns 503 "Payments are not configured yet" until they are set.
+  - `POST /post-verify-payment`: verifies the Razorpay HMAC-SHA256 signature (`order_id|payment_id`) against the pending purchase row for that user+post, then marks it `paid`. Access is permanent after that.
+- Frontend routes under `/<username>`: `post/:postId` (media viewer), `post/:postId/edit`, `post/:postId/report`.
+- Media viewer: full-screen black overlay; back arrow, owner avatar+username, 3-dot menu (owner: Edit/Delete with confirm dialog; others: Report), like heart + count, caption, Free/₹price chip. Images: swipe arrows, x/y counter, dots. Videos: tap to play/pause, seek bar, current/total duration. Locked paid posts show the unlock screen; "Unlock for ₹X" opens Razorpay Checkout and re-fetches access only after server-side verification.
+- Edit post page: media preview, caption (200 max + counter), Free/Paid dropdown, INR amount (min ₹10) — saves via `/post-update` with the same public id.
+- Report post page: reason dropdown (8 fixed reasons), additional details textarea (750 max + counter), submit -> success state. Owners are redirected away.
+- Dashboard grid: whole card navigates to the viewer (paid card "Unlock" button too); grid videos are muted previews with a center play icon; the gap between the grid/video tab separator and the posts was removed.
+- End-to-end tested via API (owner access, non-owner paid lock, simulated purchase unlock, like toggle, edit validation + same-id save, cross-user delete rejection, report row contents, storage cleanup on delete) and in the browser (viewer, carousel, like, menu, delete dialog, edit save/validation, owner report redirect). Test users/posts/reports/purchases cleaned up.
+

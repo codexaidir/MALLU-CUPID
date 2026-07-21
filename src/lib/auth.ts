@@ -179,6 +179,87 @@ export function uploadFileWithProgress(
   });
 }
 
+export const REPORT_REASONS = [
+  'Nudity or sexual content',
+  'Harassment or bullying',
+  'Spam or scam',
+  'Violence or dangerous content',
+  'Hate speech',
+  'Intellectual property violation',
+  'Impersonation',
+  'Other',
+] as const;
+
+export interface PostDetail {
+  public_id: string;
+  caption: string;
+  media_type: 'image' | 'video';
+  media_urls: string[];
+  media_count: number;
+  is_paid: boolean;
+  price: number;
+  created_at: string;
+  is_owner: boolean;
+  has_access: boolean;
+  like_count: number;
+  liked_by_me: boolean;
+  owner: { username: string; full_name: string | null; avatar_url: string | null } | null;
+}
+
+export async function getPost(publicId: string): Promise<{ post?: PostDetail; error?: string }> {
+  return apiGet(`/post?id=${encodeURIComponent(publicId)}`);
+}
+
+export async function togglePostLike(
+  publicId: string,
+): Promise<{ liked?: boolean; like_count?: number; error?: string }> {
+  return apiPost('/post-like', { public_id: publicId });
+}
+
+export async function updatePost(data: {
+  public_id: string;
+  caption: string;
+  is_paid: boolean;
+  price: number;
+}): Promise<{ status?: string; post?: CreatorPost; error?: string }> {
+  return apiPost('/post-update', data);
+}
+
+export async function deletePost(publicId: string): Promise<{ status?: string; error?: string }> {
+  return apiPost('/post-delete', { public_id: publicId });
+}
+
+export async function reportPost(
+  publicId: string,
+  reason: string,
+  details: string,
+): Promise<{ status?: string; error?: string }> {
+  return apiPost('/post-report', { public_id: publicId, reason, details });
+}
+
+export interface PostCheckout {
+  key_id?: string;
+  order_id?: string;
+  amount?: number;
+  currency?: string;
+  post_public_id?: string;
+  already_unlocked?: boolean;
+  error?: string;
+}
+
+export async function checkoutPost(publicId: string): Promise<PostCheckout> {
+  return apiPost('/post-checkout', { public_id: publicId });
+}
+
+export async function verifyPostPayment(data: {
+  public_id: string;
+  razorpay_order_id: string;
+  razorpay_payment_id: string;
+  razorpay_signature: string;
+}): Promise<{ status?: string; error?: string }> {
+  return apiPost('/post-verify-payment', data);
+}
+
 export async function getProfile(): Promise<{
   profile?: Profile;
   stats?: ProfileStats;
