@@ -25,6 +25,7 @@ import WalletPage from "./pages/WalletPage";
 import HelpPage from "./pages/HelpPage";
 import NotificationsPage from "./pages/NotificationsPage";
 import InboxPage from "./pages/InboxPage";
+import ChatPage from "./pages/ChatPage";
 import TermsPage from "./pages/TermsPage";
 import PrivacyPolicyPage from "./pages/PrivacyPolicyPage";
 import RefundPolicyPage from "./pages/RefundPolicyPage";
@@ -115,6 +116,7 @@ export default function App() {
               <Route path="help" element={<HelpPage />} />
               <Route path="notifications" element={<NotificationsPage />} />
               <Route path="inbox" element={<InboxPage />} />
+              <Route path="chat/:conversationId" element={<ChatPage />} />
             </Route>
 
             <Route path="*" element={<Navigate to="/" replace />} />

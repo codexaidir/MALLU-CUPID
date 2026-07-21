@@ -260,6 +260,107 @@ export async function verifyPostPayment(data: {
   return apiPost('/post-verify-payment', data);
 }
 
+export interface ConversationItem {
+  id: string;
+  status: 'pending' | 'accepted';
+  is_request: boolean;
+  other: { username: string; full_name: string; avatar_url: string };
+  last_message: { preview: string; created_at: string };
+  unread: number;
+  last_message_at: string;
+}
+
+export interface ChatMessage {
+  id: string;
+  sender_is_me: boolean;
+  body: string;
+  media_type: '' | 'image' | 'video';
+  media_url: string;
+  is_once: boolean;
+  once_state: 'none' | 'available' | 'opened' | 'sent';
+  seen_at: string | null;
+  created_at: string;
+}
+
+export interface ChatConversation {
+  id: string;
+  status: 'pending' | 'accepted';
+  is_request: boolean;
+  blocked_by_me: boolean;
+  can_send: boolean;
+  other: { username: string; full_name: string | null; avatar_url: string | null };
+}
+
+export async function getConversations(): Promise<{ conversations?: ConversationItem[]; error?: string }> {
+  return apiGet('/conversations');
+}
+
+export async function searchUsers(q: string): Promise<{ users?: { username: string; full_name: string; avatar_url: string }[]; error?: string }> {
+  return apiGet(`/user-search?q=${encodeURIComponent(q)}`);
+}
+
+export async function startConversation(username: string): Promise<{ conversation_id?: string; existing?: boolean; error?: string }> {
+  return apiPost('/conversations', { username });
+}
+
+export async function acceptConversation(conversationId: string): Promise<{ status?: string; error?: string }> {
+  return apiPost('/conversation-accept', { conversation_id: conversationId });
+}
+
+export async function getMessages(conversationId: string): Promise<{
+  conversation?: ChatConversation;
+  messages?: ChatMessage[];
+  error?: string;
+}> {
+  return apiGet(`/messages?conversation_id=${encodeURIComponent(conversationId)}`);
+}
+
+export async function sendMessage(data: {
+  conversation_id: string;
+  body: string;
+  media_path?: string;
+  media_type?: 'image' | 'video' | '';
+  is_once?: boolean;
+}): Promise<{ status?: string; message?: ChatMessage; error?: string }> {
+  return apiPost('/messages', data);
+}
+
+export async function getChatUploadUrl(
+  conversationId: string,
+  contentType: string,
+  size: number,
+): Promise<{ path?: string; upload_url?: string; media_type?: 'image' | 'video'; error?: string }> {
+  return apiPost('/chat-upload-url', { conversation_id: conversationId, content_type: contentType, size });
+}
+
+export async function viewOnceMessage(messageId: string): Promise<{ media_url?: string; media_type?: string; error?: string }> {
+  return apiPost('/message-view-once', { message_id: messageId });
+}
+
+export async function deleteMessages(
+  conversationId: string,
+  messageIds: string[],
+  mode: 'me' | 'both',
+): Promise<{ status?: string; error?: string }> {
+  return apiPost('/message-delete', { conversation_id: conversationId, message_ids: messageIds, mode });
+}
+
+export async function deleteChat(conversationId: string, mode: 'me' | 'both'): Promise<{ status?: string; error?: string }> {
+  return apiPost('/chat-delete', { conversation_id: conversationId, mode });
+}
+
+export async function blockChatUser(conversationId: string, block: boolean): Promise<{ status?: string; error?: string }> {
+  return apiPost('/chat-block', { conversation_id: conversationId, block });
+}
+
+export async function reportChatUser(
+  conversationId: string,
+  reason: string,
+  details: string,
+): Promise<{ status?: string; error?: string }> {
+  return apiPost('/chat-report', { conversation_id: conversationId, reason, details });
+}
+
 export async function getProfile(): Promise<{
   profile?: Profile;
   stats?: ProfileStats;

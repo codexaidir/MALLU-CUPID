@@ -1275,6 +1275,570 @@ const handleVerifyPostPayment = async (req: Request) => {
   return jsonResponse({ status: 'paid' }, 200, {}, [], origin)
 }
 
+// ---------------------------------------------------------------------------
+// Messaging
+// ---------------------------------------------------------------------------
+
+const CHAT_MEDIA_BUCKET = 'chat-media'
+const MAX_CHAT_MEDIA_SIZE = 100 * 1024 * 1024
+
+const signChatPath = async (path: string, expiresIn = 3600): Promise<string> => {
+  const res = await fetch(`${SUPABASE_URL}/storage/v1/object/sign/${CHAT_MEDIA_BUCKET}/${path}`, {
+    method: 'POST',
+    headers: { ...authHeaders(true) },
+    body: JSON.stringify({ expiresIn }),
+  })
+  if (!res.ok) return ''
+  const body = await res.json().catch(() => ({}))
+  return body?.signedURL ? `${SUPABASE_URL}/storage/v1${body.signedURL}` : ''
+}
+
+const getConversationForUser = async (conversationId: string, userId: string) => {
+  if (!/^[0-9a-f-]{36}$/i.test(conversationId)) return null
+  const res = await fetch(
+    `${SUPABASE_URL}/rest/v1/conversations?id=eq.${conversationId}&select=*&limit=1`,
+    { headers: { ...authHeaders(true) } },
+  )
+  if (!res.ok) return null
+  const rows = await res.json().catch(() => [])
+  const convo = Array.isArray(rows) && rows.length ? rows[0] : null
+  if (!convo) return null
+  if (convo.user_a !== userId && convo.user_b !== userId) return null
+  return convo
+}
+
+const conversationPeer = (convo: Record<string, unknown>, userId: string) =>
+  convo.user_a === userId ? convo.user_b as string : convo.user_a as string
+
+const clearedAtFor = (convo: Record<string, unknown>, userId: string) =>
+  (convo.user_a === userId ? convo.cleared_a : convo.cleared_b) as string | null
+
+const getBlockPair = async (userId: string, otherId: string) => {
+  const res = await fetch(
+    `${SUPABASE_URL}/rest/v1/user_blocks?or=(and(blocker_id.eq.${userId},blocked_id.eq.${otherId}),and(blocker_id.eq.${otherId},blocked_id.eq.${userId}))&select=blocker_id`,
+    { headers: { ...authHeaders(true) } },
+  )
+  const rows = res.ok ? await res.json().catch(() => []) : []
+  const blockers = new Set((Array.isArray(rows) ? rows : []).map((r: { blocker_id: string }) => r.blocker_id))
+  return { blockedByMe: blockers.has(userId), blockedMe: blockers.has(otherId) }
+}
+
+const messagePreview = (msg: Record<string, unknown>, isMine: boolean) => {
+  if (msg.media_type === 'image') return `${isMine ? 'You: ' : ''}📷 Photo${msg.is_once ? ' (view once)' : ''}`
+  if (msg.media_type === 'video') return `${isMine ? 'You: ' : ''}🎬 Video${msg.is_once ? ' (view once)' : ''}`
+  const body = typeof msg.body === 'string' ? msg.body : ''
+  return `${isMine ? 'You: ' : ''}${body}`
+}
+
+const handleGetConversations = async (req: Request) => {
+  const origin = req.headers.get('origin')
+  const user = await requireUser(req)
+  if (!user) return jsonResponse({ error: 'Unauthorized' }, 401, {}, [], origin)
+
+  const convoRes = await fetch(
+    `${SUPABASE_URL}/rest/v1/conversations?or=(user_a.eq.${user.id},user_b.eq.${user.id})&select=*&order=last_message_at.desc&limit=100`,
+    { headers: { ...authHeaders(true) } },
+  )
+  if (!convoRes.ok) return jsonResponse({ error: 'Failed to load conversations' }, 500, {}, [], origin)
+  const convos = await convoRes.json().catch(() => [])
+  if (!Array.isArray(convos) || !convos.length) return jsonResponse({ conversations: [] }, 200, {}, [], origin)
+
+  const convoIds = convos.map((c) => c.id).join(',')
+  const peerIds = [...new Set(convos.map((c) => conversationPeer(c, user.id)))].join(',')
+  const notDeletedForMe = `deleted_for=not.cs.${encodeURIComponent(`{${user.id}}`)}`
+
+  const [profilesRes, messagesRes] = await Promise.all([
+    fetch(`${SUPABASE_URL}/rest/v1/profiles?id=in.(${peerIds})&select=id,username,full_name,avatar_url`, {
+      headers: { ...authHeaders(true) },
+    }),
+    fetch(
+      `${SUPABASE_URL}/rest/v1/messages?conversation_id=in.(${convoIds})&deleted_for_all=eq.false&${notDeletedForMe}&select=id,conversation_id,sender_id,body,media_type,is_once,seen_at,created_at&order=created_at.desc&limit=1000`,
+      { headers: { ...authHeaders(true) } },
+    ),
+  ])
+
+  const profiles = profilesRes.ok ? await profilesRes.json().catch(() => []) : []
+  const profileMap = new Map((Array.isArray(profiles) ? profiles : []).map((p: { id: string }) => [p.id, p]))
+  const allMessages = messagesRes.ok ? await messagesRes.json().catch(() => []) : []
+
+  const items = []
+  for (const convo of convos) {
+    const peerId = conversationPeer(convo, user.id)
+    const peer = profileMap.get(peerId) as { username?: string; full_name?: string; avatar_url?: string } | undefined
+    const cleared = clearedAtFor(convo, user.id)
+    const visible = (Array.isArray(allMessages) ? allMessages : []).filter((m: Record<string, unknown>) =>
+      m.conversation_id === convo.id && (!cleared || String(m.created_at) > cleared))
+    const last = visible[0] || null
+    // A conversation the user cleared stays hidden until a new message arrives
+    if (!last) continue
+
+    const unread = visible.filter((m: Record<string, unknown>) => m.sender_id !== user.id && !m.seen_at).length
+    items.push({
+      id: convo.id,
+      status: convo.status,
+      is_request: convo.status === 'pending' && convo.created_by !== user.id,
+      other: {
+        username: peer?.username || '',
+        full_name: peer?.full_name || '',
+        avatar_url: peer?.avatar_url || '',
+      },
+      last_message: {
+        preview: messagePreview(last, last.sender_id === user.id),
+        created_at: last.created_at,
+      },
+      unread,
+      last_message_at: convo.last_message_at,
+    })
+  }
+
+  return jsonResponse({ conversations: items }, 200, {}, [], origin)
+}
+
+const handleUserSearch = async (req: Request, url: URL) => {
+  const origin = req.headers.get('origin')
+  const user = await requireUser(req)
+  if (!user) return jsonResponse({ error: 'Unauthorized' }, 401, {}, [], origin)
+
+  const q = (url.searchParams.get('q') || '').trim().toLowerCase().replace(/[%_,()]/g, '')
+  if (q.length < 2) return jsonResponse({ users: [] }, 200, {}, [], origin)
+
+  const res = await fetch(
+    `${SUPABASE_URL}/rest/v1/profiles?username=ilike.${encodeURIComponent(`${q}%`)}&id=neq.${user.id}&select=username,full_name,avatar_url&limit=5`,
+    { headers: { ...authHeaders(true) } },
+  )
+  const rows = res.ok ? await res.json().catch(() => []) : []
+  return jsonResponse({ users: Array.isArray(rows) ? rows : [] }, 200, {}, [], origin)
+}
+
+const handleCreateConversation = async (req: Request) => {
+  const origin = req.headers.get('origin')
+  const user = await requireUser(req)
+  if (!user) return jsonResponse({ error: 'Unauthorized' }, 401, {}, [], origin)
+
+  const body = await parseJson(req)
+  const username = typeof body.username === 'string' ? body.username.trim().toLowerCase() : ''
+  if (!username) return jsonResponse({ error: 'Missing username' }, 400, {}, [], origin)
+
+  const targetRes = await fetch(
+    `${SUPABASE_URL}/rest/v1/profiles?username=eq.${encodeURIComponent(username)}&select=id,username&limit=1`,
+    { headers: { ...authHeaders(true) } },
+  )
+  const targetRows = targetRes.ok ? await targetRes.json().catch(() => []) : []
+  const target = Array.isArray(targetRows) && targetRows.length ? targetRows[0] : null
+  if (!target) return jsonResponse({ error: 'User not found' }, 404, {}, [], origin)
+  if (target.id === user.id) return jsonResponse({ error: 'You cannot message yourself' }, 400, {}, [], origin)
+
+  const blocks = await getBlockPair(user.id, target.id)
+  if (blocks.blockedByMe) return jsonResponse({ error: 'You have blocked this user. Unblock to message.' }, 403, {}, [], origin)
+  if (blocks.blockedMe) return jsonResponse({ error: 'Unable to message this user' }, 403, {}, [], origin)
+
+  const [userA, userB] = [user.id, target.id].sort()
+  const existingRes = await fetch(
+    `${SUPABASE_URL}/rest/v1/conversations?user_a=eq.${userA}&user_b=eq.${userB}&select=id&limit=1`,
+    { headers: { ...authHeaders(true) } },
+  )
+  const existing = existingRes.ok ? await existingRes.json().catch(() => []) : []
+  if (Array.isArray(existing) && existing.length) {
+    return jsonResponse({ conversation_id: existing[0].id, existing: true }, 200, {}, [], origin)
+  }
+
+  const insertRes = await fetch(`${SUPABASE_URL}/rest/v1/conversations`, {
+    method: 'POST',
+    headers: { ...authHeaders(true), Prefer: 'return=representation' },
+    body: JSON.stringify([{ user_a: userA, user_b: userB, created_by: user.id, status: 'pending' }]),
+  })
+  if (!insertRes.ok) {
+    console.error('Conversation create failed:', await insertRes.text().catch(() => ''))
+    return jsonResponse({ error: 'Failed to start conversation' }, 500, {}, [], origin)
+  }
+  const rows = await insertRes.json().catch(() => [])
+  return jsonResponse({ conversation_id: rows[0]?.id, existing: false }, 200, {}, [], origin)
+}
+
+const handleAcceptConversation = async (req: Request) => {
+  const origin = req.headers.get('origin')
+  const user = await requireUser(req)
+  if (!user) return jsonResponse({ error: 'Unauthorized' }, 401, {}, [], origin)
+
+  const body = await parseJson(req)
+  const convo = await getConversationForUser(typeof body.conversation_id === 'string' ? body.conversation_id : '', user.id)
+  if (!convo) return jsonResponse({ error: 'Conversation not found' }, 404, {}, [], origin)
+  if (convo.created_by === user.id) return jsonResponse({ error: 'Only the recipient can accept a request' }, 403, {}, [], origin)
+
+  await fetch(`${SUPABASE_URL}/rest/v1/conversations?id=eq.${convo.id}`, {
+    method: 'PATCH',
+    headers: { ...authHeaders(true), Prefer: 'return=minimal' },
+    body: JSON.stringify({ status: 'accepted' }),
+  })
+  return jsonResponse({ status: 'accepted' }, 200, {}, [], origin)
+}
+
+const decorateMessage = async (msg: Record<string, unknown>, userId: string) => {
+  const isMine = msg.sender_id === userId
+  let mediaUrl = ''
+  let onceState: string = 'none'
+  if (msg.media_type && msg.media_path) {
+    if (msg.is_once) {
+      // View-once media is never included inline; the recipient must call /message-view-once
+      onceState = msg.viewed_at ? 'opened' : (isMine ? 'sent' : 'available')
+    } else {
+      mediaUrl = await signChatPath(msg.media_path as string)
+    }
+  }
+  return {
+    id: msg.id,
+    sender_is_me: isMine,
+    body: msg.body,
+    media_type: msg.media_type,
+    media_url: mediaUrl,
+    is_once: msg.is_once,
+    once_state: onceState,
+    seen_at: msg.seen_at,
+    created_at: msg.created_at,
+  }
+}
+
+const handleGetMessages = async (req: Request, url: URL) => {
+  const origin = req.headers.get('origin')
+  const user = await requireUser(req)
+  if (!user) return jsonResponse({ error: 'Unauthorized' }, 401, {}, [], origin)
+
+  const convo = await getConversationForUser(url.searchParams.get('conversation_id') || '', user.id)
+  if (!convo) return jsonResponse({ error: 'Conversation not found' }, 404, {}, [], origin)
+
+  const peerId = conversationPeer(convo, user.id)
+  const cleared = clearedAtFor(convo, user.id)
+  const notDeletedForMe = `deleted_for=not.cs.${encodeURIComponent(`{${user.id}}`)}`
+  const clearedFilter = cleared ? `&created_at=gt.${encodeURIComponent(cleared)}` : ''
+
+  const [messagesRes, peer, blocks] = await Promise.all([
+    fetch(
+      `${SUPABASE_URL}/rest/v1/messages?conversation_id=eq.${convo.id}&deleted_for_all=eq.false&${notDeletedForMe}${clearedFilter}&select=*&order=created_at.asc&limit=500`,
+      { headers: { ...authHeaders(true) } },
+    ),
+    fetchProfileBrief(peerId),
+    getBlockPair(user.id, peerId),
+  ])
+
+  const rows = messagesRes.ok ? await messagesRes.json().catch(() => []) : []
+  const messages = await Promise.all((Array.isArray(rows) ? rows : []).map((m) => decorateMessage(m, user.id)))
+
+  // Viewing the chat marks incoming messages as seen
+  await fetch(
+    `${SUPABASE_URL}/rest/v1/messages?conversation_id=eq.${convo.id}&sender_id=neq.${user.id}&seen_at=is.null`,
+    {
+      method: 'PATCH',
+      headers: { ...authHeaders(true), Prefer: 'return=minimal' },
+      body: JSON.stringify({ seen_at: new Date().toISOString() }),
+    },
+  ).catch(() => {})
+
+  return jsonResponse({
+    conversation: {
+      id: convo.id,
+      status: convo.status,
+      is_request: convo.status === 'pending' && convo.created_by !== user.id,
+      blocked_by_me: blocks.blockedByMe,
+      can_send: !blocks.blockedByMe && !blocks.blockedMe,
+      other: peer
+        ? { username: peer.username, full_name: peer.full_name, avatar_url: peer.avatar_url }
+        : { username: '', full_name: '', avatar_url: '' },
+    },
+    messages,
+  }, 200, {}, [], origin)
+}
+
+const handleChatUploadUrl = async (req: Request) => {
+  const origin = req.headers.get('origin')
+  const user = await requireUser(req)
+  if (!user) return jsonResponse({ error: 'Unauthorized' }, 401, {}, [], origin)
+
+  const body = await parseJson(req)
+  const convo = await getConversationForUser(typeof body.conversation_id === 'string' ? body.conversation_id : '', user.id)
+  if (!convo) return jsonResponse({ error: 'Conversation not found' }, 404, {}, [], origin)
+
+  const contentType = typeof body.content_type === 'string' ? body.content_type : ''
+  const size = Number(body.size)
+  const isImage = contentType.startsWith('image/')
+  const isVideo = contentType.startsWith('video/')
+  if (!isImage && !isVideo) return jsonResponse({ error: 'Only photos and videos can be attached' }, 400, {}, [], origin)
+  if (!Number.isFinite(size) || size <= 0 || size > MAX_CHAT_MEDIA_SIZE) {
+    return jsonResponse({ error: 'Attachment must be 100MB or smaller' }, 400, {}, [], origin)
+  }
+
+  const path = `${convo.id}/${crypto.randomUUID()}.${mediaExtension(contentType)}`
+  const signRes = await fetch(`${SUPABASE_URL}/storage/v1/object/upload/sign/${CHAT_MEDIA_BUCKET}/${path}`, {
+    method: 'POST',
+    headers: { ...authHeaders(true) },
+    body: JSON.stringify({}),
+  })
+  if (!signRes.ok) {
+    console.error('Chat upload sign failed:', await signRes.text().catch(() => ''))
+    return jsonResponse({ error: 'Failed to prepare upload' }, 500, {}, [], origin)
+  }
+  const signBody = await signRes.json().catch(() => ({}))
+  if (!signBody?.url) return jsonResponse({ error: 'Failed to prepare upload' }, 500, {}, [], origin)
+
+  return jsonResponse({
+    path,
+    upload_url: `${SUPABASE_URL}/storage/v1${signBody.url}`,
+    media_type: isVideo ? 'video' : 'image',
+  }, 200, {}, [], origin)
+}
+
+const handleSendMessage = async (req: Request) => {
+  const origin = req.headers.get('origin')
+  const user = await requireUser(req)
+  if (!user) return jsonResponse({ error: 'Unauthorized' }, 401, {}, [], origin)
+
+  const body = await parseJson(req)
+  const convo = await getConversationForUser(typeof body.conversation_id === 'string' ? body.conversation_id : '', user.id)
+  if (!convo) return jsonResponse({ error: 'Conversation not found' }, 404, {}, [], origin)
+
+  const peerId = conversationPeer(convo, user.id)
+  const blocks = await getBlockPair(user.id, peerId)
+  if (blocks.blockedByMe) return jsonResponse({ error: 'You have blocked this user. Unblock to message.' }, 403, {}, [], origin)
+  if (blocks.blockedMe) return jsonResponse({ error: 'Unable to message this user' }, 403, {}, [], origin)
+
+  const text = typeof body.body === 'string' ? body.body.trim() : ''
+  const mediaPath = typeof body.media_path === 'string' ? body.media_path : ''
+  const mediaType = body.media_type === 'image' || body.media_type === 'video' ? body.media_type : ''
+  const isOnce = body.is_once === true && Boolean(mediaPath)
+
+  if (text.length > 2000) return jsonResponse({ error: 'Message must be 2000 characters or fewer' }, 400, {}, [], origin)
+  if (!text && !mediaPath) return jsonResponse({ error: 'Message is empty' }, 400, {}, [], origin)
+  if (mediaPath && (!mediaType || !mediaPath.startsWith(`${convo.id}/`))) {
+    return jsonResponse({ error: 'Invalid attachment' }, 400, {}, [], origin)
+  }
+
+  const insertRes = await fetch(`${SUPABASE_URL}/rest/v1/messages`, {
+    method: 'POST',
+    headers: { ...authHeaders(true), Prefer: 'return=representation' },
+    body: JSON.stringify([{
+      conversation_id: convo.id,
+      sender_id: user.id,
+      body: text,
+      media_path: mediaPath,
+      media_type: mediaType,
+      is_once: isOnce,
+    }]),
+  })
+  if (!insertRes.ok) {
+    console.error('Message send failed:', await insertRes.text().catch(() => ''))
+    return jsonResponse({ error: 'Failed to send message' }, 500, {}, [], origin)
+  }
+
+  // Replying to a request accepts it; also bump conversation recency
+  const patch: Record<string, unknown> = { last_message_at: new Date().toISOString() }
+  if (convo.status === 'pending' && convo.created_by !== user.id) patch.status = 'accepted'
+  await fetch(`${SUPABASE_URL}/rest/v1/conversations?id=eq.${convo.id}`, {
+    method: 'PATCH',
+    headers: { ...authHeaders(true), Prefer: 'return=minimal' },
+    body: JSON.stringify(patch),
+  }).catch(() => {})
+
+  const rows = await insertRes.json().catch(() => [])
+  const message = rows[0] ? await decorateMessage(rows[0], user.id) : null
+  return jsonResponse({ status: 'sent', message }, 200, {}, [], origin)
+}
+
+const handleViewOnceMessage = async (req: Request) => {
+  const origin = req.headers.get('origin')
+  const user = await requireUser(req)
+  if (!user) return jsonResponse({ error: 'Unauthorized' }, 401, {}, [], origin)
+
+  const body = await parseJson(req)
+  const messageId = typeof body.message_id === 'string' ? body.message_id : ''
+  if (!/^[0-9a-f-]{36}$/i.test(messageId)) return jsonResponse({ error: 'Message not found' }, 404, {}, [], origin)
+
+  const res = await fetch(`${SUPABASE_URL}/rest/v1/messages?id=eq.${messageId}&select=*&limit=1`, {
+    headers: { ...authHeaders(true) },
+  })
+  const rows = res.ok ? await res.json().catch(() => []) : []
+  const msg = Array.isArray(rows) && rows.length ? rows[0] : null
+  if (!msg) return jsonResponse({ error: 'Message not found' }, 404, {}, [], origin)
+
+  const convo = await getConversationForUser(msg.conversation_id, user.id)
+  if (!convo) return jsonResponse({ error: 'Message not found' }, 404, {}, [], origin)
+  if (msg.sender_id === user.id) return jsonResponse({ error: 'View once media can only be opened by the recipient' }, 403, {}, [], origin)
+  if (!msg.is_once || !msg.media_path) return jsonResponse({ error: 'Not a view once message' }, 400, {}, [], origin)
+  if (msg.viewed_at) return jsonResponse({ error: 'This media has already been viewed' }, 410, {}, [], origin)
+
+  // Mark viewed first so a second request can never get another URL
+  const markRes = await fetch(`${SUPABASE_URL}/rest/v1/messages?id=eq.${messageId}&viewed_at=is.null`, {
+    method: 'PATCH',
+    headers: { ...authHeaders(true), Prefer: 'return=representation' },
+    body: JSON.stringify({ viewed_at: new Date().toISOString() }),
+  })
+  const marked = markRes.ok ? await markRes.json().catch(() => []) : []
+  if (!Array.isArray(marked) || !marked.length) {
+    return jsonResponse({ error: 'This media has already been viewed' }, 410, {}, [], origin)
+  }
+
+  const url = await signChatPath(msg.media_path, 120)
+  if (!url) return jsonResponse({ error: 'Failed to load media' }, 500, {}, [], origin)
+  return jsonResponse({ media_url: url, media_type: msg.media_type }, 200, {}, [], origin)
+}
+
+const handleDeleteMessages = async (req: Request) => {
+  const origin = req.headers.get('origin')
+  const user = await requireUser(req)
+  if (!user) return jsonResponse({ error: 'Unauthorized' }, 401, {}, [], origin)
+
+  const body = await parseJson(req)
+  const convo = await getConversationForUser(typeof body.conversation_id === 'string' ? body.conversation_id : '', user.id)
+  if (!convo) return jsonResponse({ error: 'Conversation not found' }, 404, {}, [], origin)
+
+  const mode = body.mode === 'both' ? 'both' : 'me'
+  const ids = (Array.isArray(body.message_ids) ? body.message_ids : [])
+    .filter((id: unknown) => typeof id === 'string' && /^[0-9a-f-]{36}$/i.test(id as string))
+    .slice(0, 100)
+  if (!ids.length) return jsonResponse({ error: 'No messages selected' }, 400, {}, [], origin)
+
+  const res = await fetch(
+    `${SUPABASE_URL}/rest/v1/messages?id=in.(${ids.join(',')})&conversation_id=eq.${convo.id}&select=id,sender_id,media_path,deleted_for`,
+    { headers: { ...authHeaders(true) } },
+  )
+  const rows = res.ok ? await res.json().catch(() => []) : []
+  if (!Array.isArray(rows) || !rows.length) return jsonResponse({ error: 'Messages not found' }, 404, {}, [], origin)
+
+  if (mode === 'both') {
+    if (rows.some((m: { sender_id: string }) => m.sender_id !== user.id)) {
+      return jsonResponse({ error: 'You can only delete your own messages for everyone' }, 403, {}, [], origin)
+    }
+    const mediaPaths = rows.map((m: { media_path: string }) => m.media_path).filter(Boolean)
+    if (mediaPaths.length) {
+      await fetch(`${SUPABASE_URL}/storage/v1/object/${CHAT_MEDIA_BUCKET}`, {
+        method: 'DELETE',
+        headers: { ...authHeaders(true) },
+        body: JSON.stringify({ prefixes: mediaPaths }),
+      }).catch(() => {})
+    }
+    await fetch(`${SUPABASE_URL}/rest/v1/messages?id=in.(${rows.map((m: { id: string }) => m.id).join(',')})`, {
+      method: 'PATCH',
+      headers: { ...authHeaders(true), Prefer: 'return=minimal' },
+      body: JSON.stringify({ deleted_for_all: true, body: '', media_path: '', media_type: '' }),
+    })
+  } else {
+    for (const msg of rows) {
+      const deletedFor = Array.isArray(msg.deleted_for) ? msg.deleted_for : []
+      if (deletedFor.includes(user.id)) continue
+      await fetch(`${SUPABASE_URL}/rest/v1/messages?id=eq.${msg.id}`, {
+        method: 'PATCH',
+        headers: { ...authHeaders(true), Prefer: 'return=minimal' },
+        body: JSON.stringify({ deleted_for: [...deletedFor, user.id] }),
+      })
+    }
+  }
+
+  return jsonResponse({ status: 'deleted', count: rows.length }, 200, {}, [], origin)
+}
+
+const handleDeleteChat = async (req: Request) => {
+  const origin = req.headers.get('origin')
+  const user = await requireUser(req)
+  if (!user) return jsonResponse({ error: 'Unauthorized' }, 401, {}, [], origin)
+
+  const body = await parseJson(req)
+  const convo = await getConversationForUser(typeof body.conversation_id === 'string' ? body.conversation_id : '', user.id)
+  if (!convo) return jsonResponse({ error: 'Conversation not found' }, 404, {}, [], origin)
+
+  if (body.mode === 'both') {
+    // Remove all media under this conversation, then the row (messages cascade)
+    const listRes = await fetch(`${SUPABASE_URL}/storage/v1/object/list/${CHAT_MEDIA_BUCKET}`, {
+      method: 'POST',
+      headers: { ...authHeaders(true) },
+      body: JSON.stringify({ prefix: convo.id, limit: 1000 }),
+    })
+    const objects = listRes.ok ? await listRes.json().catch(() => []) : []
+    const prefixes = (Array.isArray(objects) ? objects : [])
+      .map((obj: { name?: string }) => `${convo.id}/${obj?.name}`)
+      .filter((p: string) => !p.endsWith('/undefined'))
+    if (prefixes.length) {
+      await fetch(`${SUPABASE_URL}/storage/v1/object/${CHAT_MEDIA_BUCKET}`, {
+        method: 'DELETE',
+        headers: { ...authHeaders(true) },
+        body: JSON.stringify({ prefixes }),
+      }).catch(() => {})
+    }
+    await fetch(`${SUPABASE_URL}/rest/v1/conversations?id=eq.${convo.id}`, {
+      method: 'DELETE',
+      headers: { ...authHeaders(true) },
+    })
+  } else {
+    const field = convo.user_a === user.id ? 'cleared_a' : 'cleared_b'
+    await fetch(`${SUPABASE_URL}/rest/v1/conversations?id=eq.${convo.id}`, {
+      method: 'PATCH',
+      headers: { ...authHeaders(true), Prefer: 'return=minimal' },
+      body: JSON.stringify({ [field]: new Date().toISOString() }),
+    })
+  }
+
+  return jsonResponse({ status: 'chat_deleted' }, 200, {}, [], origin)
+}
+
+const handleBlockUser = async (req: Request) => {
+  const origin = req.headers.get('origin')
+  const user = await requireUser(req)
+  if (!user) return jsonResponse({ error: 'Unauthorized' }, 401, {}, [], origin)
+
+  const body = await parseJson(req)
+  const convo = await getConversationForUser(typeof body.conversation_id === 'string' ? body.conversation_id : '', user.id)
+  if (!convo) return jsonResponse({ error: 'Conversation not found' }, 404, {}, [], origin)
+  const peerId = conversationPeer(convo, user.id)
+
+  if (body.block === false) {
+    await fetch(`${SUPABASE_URL}/rest/v1/user_blocks?blocker_id=eq.${user.id}&blocked_id=eq.${peerId}`, {
+      method: 'DELETE',
+      headers: { ...authHeaders(true) },
+    })
+    return jsonResponse({ status: 'unblocked' }, 200, {}, [], origin)
+  }
+
+  await fetch(`${SUPABASE_URL}/rest/v1/user_blocks?on_conflict=blocker_id,blocked_id`, {
+    method: 'POST',
+    headers: { ...authHeaders(true), Prefer: 'resolution=ignore-duplicates,return=minimal' },
+    body: JSON.stringify([{ blocker_id: user.id, blocked_id: peerId }]),
+  })
+  return jsonResponse({ status: 'blocked' }, 200, {}, [], origin)
+}
+
+const handleReportUser = async (req: Request) => {
+  const origin = req.headers.get('origin')
+  const user = await requireUser(req)
+  if (!user) return jsonResponse({ error: 'Unauthorized' }, 401, {}, [], origin)
+
+  const body = await parseJson(req)
+  const convo = await getConversationForUser(typeof body.conversation_id === 'string' ? body.conversation_id : '', user.id)
+  if (!convo) return jsonResponse({ error: 'Conversation not found' }, 404, {}, [], origin)
+  const peerId = conversationPeer(convo, user.id)
+
+  const reason = typeof body.reason === 'string' ? body.reason : ''
+  const details = typeof body.details === 'string' ? body.details.trim() : ''
+  if (!REPORT_REASONS.includes(reason)) return jsonResponse({ error: 'Select a valid reason' }, 400, {}, [], origin)
+  if (details.length > 750) return jsonResponse({ error: 'Additional details must be 750 characters or fewer' }, 400, {}, [], origin)
+
+  const [reporter, reported] = await Promise.all([fetchProfileBrief(user.id), fetchProfileBrief(peerId)])
+  const res = await fetch(`${SUPABASE_URL}/rest/v1/user_reports`, {
+    method: 'POST',
+    headers: { ...authHeaders(true), Prefer: 'return=minimal' },
+    body: JSON.stringify([{
+      reporter_id: user.id,
+      reporter_username: reporter?.username || '',
+      reported_id: peerId,
+      reported_username: reported?.username || '',
+      conversation_id: convo.id,
+      reason,
+      details,
+    }]),
+  })
+  if (!res.ok) {
+    console.error('User report failed:', await res.text().catch(() => ''))
+    return jsonResponse({ error: 'Failed to submit report' }, 500, {}, [], origin)
+  }
+  return jsonResponse({ status: 'report_submitted' }, 200, {}, [], origin)
+}
+
 const handleForgot = async (req: Request) => {
   const origin = req.headers.get('origin')
   const { email } = await parseJson(req)
@@ -1355,6 +1919,18 @@ serve(async (req) => {
   if (isRoute('post-report') && req.method === 'POST') return handleReportPost(req)
   if (isRoute('post-checkout') && req.method === 'POST') return handlePostCheckout(req)
   if (isRoute('post-verify-payment') && req.method === 'POST') return handleVerifyPostPayment(req)
+  if (isRoute('conversations') && req.method === 'GET') return handleGetConversations(req)
+  if (isRoute('conversations') && req.method === 'POST') return handleCreateConversation(req)
+  if (isRoute('conversation-accept') && req.method === 'POST') return handleAcceptConversation(req)
+  if (isRoute('user-search') && req.method === 'GET') return handleUserSearch(req, url)
+  if (isRoute('messages') && req.method === 'GET') return handleGetMessages(req, url)
+  if (isRoute('messages') && req.method === 'POST') return handleSendMessage(req)
+  if (isRoute('chat-upload-url') && req.method === 'POST') return handleChatUploadUrl(req)
+  if (isRoute('message-view-once') && req.method === 'POST') return handleViewOnceMessage(req)
+  if (isRoute('message-delete') && req.method === 'POST') return handleDeleteMessages(req)
+  if (isRoute('chat-delete') && req.method === 'POST') return handleDeleteChat(req)
+  if (isRoute('chat-block') && req.method === 'POST') return handleBlockUser(req)
+  if (isRoute('chat-report') && req.method === 'POST') return handleReportUser(req)
 
   return jsonResponse({ error: 'Not Found' }, 404, {}, [], req.headers.get('origin'))
 })
