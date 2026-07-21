@@ -70,5 +70,9 @@ The application uses URL-based pagination (React Router) with the following rout
 - Signup now uses OTP: backend stores `email_verifications` and sends 6-digit code via Resend.
 - Verify endpoint creates Supabase user and `profiles` record, then sets HttpOnly session cookies.
 - Auth API is hosted as Supabase edge function; frontend must use `VITE_AUTH_API_URL` pointing to the deployed function, e.g. `https://rytulzgsuzgicmpvrrxn.supabase.co/functions/v1/auth`.
+- Signup email send failures now return 502 error (previously silently swallowed); Resend API errors logged in edge function logs.
+- Added `POST /auth/resend`: regenerates token for latest unused signup verification (by email) and re-sends via Resend.
+- Verify OTP page receives email via router navigation state from signup; Resend Code button calls `/auth/resend`. Redirects to `/signup` if no email in state.
+- Requires `AUTH_RESEND_API_KEY` (or `RESEND_API_KEY`) secret set on edge function and verified Resend sender domain for `AUTH_EMAIL_FROM`.
 
 

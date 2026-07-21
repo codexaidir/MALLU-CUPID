@@ -39,6 +39,10 @@ export async function verifyOtp(token: string) {
   return apiPost('/auth/verify', { token });
 }
 
+export async function resendOtp(email: string) {
+  return apiPost('/auth/resend', { email });
+}
+
 export async function forgotPassword(email: string) {
   return apiPost('/auth/forgot', { email });
 }

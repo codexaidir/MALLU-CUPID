@@ -78,7 +78,7 @@ export default function SignupPage() {
         return;
       }
       setSuccess('Account created! Check your email to verify.');
-      navigate('/verify-otp', { replace: true });
+      navigate('/verify-otp', { replace: true, state: { email } });
     })();
   };
 

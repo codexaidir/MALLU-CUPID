@@ -1,16 +1,36 @@
 import React, { useState, useEffect } from "react";
 import { motion, AnimatePresence } from "motion/react";
 import { ArrowRight, KeyRound, Loader2, AlertCircle, CheckCircle2 } from "lucide-react";
-import { useNavigate } from "react-router-dom";
-import { verifyOtp } from "../lib/auth";
+import { useNavigate, useLocation } from "react-router-dom";
+import { verifyOtp, resendOtp } from "../lib/auth";
 
 export default function VerifyOtpPage() {
   const [otp, setOtp] = useState(["", "", "", "", "", ""]);
   const [timeLeft, setTimeLeft] = useState(45);
   const [isLoading, setIsLoading] = useState(false);
+  const [isResending, setIsResending] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
   const navigate = useNavigate();
+  const location = useLocation();
+  const email: string | undefined = location.state?.email;
+
+  useEffect(() => {
+    if (!email) navigate('/signup', { replace: true });
+  }, [email, navigate]);
+
+  const handleResend = async () => {
+    if (!email || isResending) return;
+    setError(null);
+    setIsResending(true);
+    const response = await resendOtp(email);
+    setIsResending(false);
+    if (response?.error) {
+      setError(response.error || 'Failed to resend code');
+      return;
+    }
+    setTimeLeft(45);
+  };
 
   useEffect(() => {
     if (timeLeft > 0) {
@@ -119,7 +139,6 @@ export default function VerifyOtpPage() {
             />
           ))}
         </div>
-        <p className="text-center text-xs text-zinc-500">Hint: Use 123456</p>
 
         <button 
           type="submit"
@@ -144,14 +163,11 @@ export default function VerifyOtpPage() {
           </p>
         ) : (
           <button 
-            onClick={() => {
-              setTimeLeft(45);
-              setError(null);
-            }}
-            disabled={isLoading || !!success}
+            onClick={handleResend}
+            disabled={isLoading || isResending || !!success}
             className="text-sm font-bold text-rose-500 hover:text-rose-600 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
           >
-            Resend Code
+            {isResending ? 'Sending...' : 'Resend Code'}
           </button>
         )}
       </div>

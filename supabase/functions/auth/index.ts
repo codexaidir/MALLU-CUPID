@@ -84,10 +84,13 @@ const parseJson = async (req: Request) => {
   }
 }
 
-const sendVerificationEmail = async (email: string, token: string) => {
-  if (!RESEND_API_KEY) return
+const sendVerificationEmail = async (email: string, token: string): Promise<{ ok: boolean; error?: string }> => {
+  if (!RESEND_API_KEY) {
+    console.error('sendVerificationEmail: RESEND_API_KEY is not configured')
+    return { ok: false, error: 'Email service not configured' }
+  }
 
-  await fetch('https://api.resend.com/emails', {
+  const res = await fetch('https://api.resend.com/emails', {
     method: 'POST',
     headers: {
       Authorization: `Bearer ${RESEND_API_KEY}`,
@@ -100,6 +103,14 @@ const sendVerificationEmail = async (email: string, token: string) => {
       html: `<p>Your verification code is <strong>${token}</strong>.</p><p>It expires in 20 minutes.</p>`,
     }),
   })
+
+  if (!res.ok) {
+    const errorBody = await res.text().catch(() => '')
+    console.error(`sendVerificationEmail: Resend API error ${res.status}: ${errorBody}`)
+    return { ok: false, error: 'Failed to send verification email' }
+  }
+
+  return { ok: true }
 }
 
 const signIn = async (email: string, password: string) => {
@@ -224,7 +235,45 @@ const handleSignup = async (req: Request) => {
 
   if (!insertRes.ok) return jsonResponse({ error: 'Failed to store verification' }, 500, {}, [], origin)
 
-  await sendVerificationEmail(email, token)
+  const sendResult = await sendVerificationEmail(email, token)
+  if (!sendResult.ok) return jsonResponse({ error: sendResult.error || 'Failed to send verification email' }, 502, {}, [], origin)
+
+  return jsonResponse({ status: 'verification_sent' }, 200, {}, [], origin)
+}
+
+const handleResend = async (req: Request) => {
+  const origin = req.headers.get('origin')
+  const { email } = await parseJson(req)
+  if (!email) return jsonResponse({ error: 'Missing email' }, 400, {}, [], origin)
+
+  const lookupRes = await fetch(
+    `${SUPABASE_URL}/rest/v1/email_verifications?email=eq.${encodeURIComponent(email)}&purpose=eq.signup&used=eq.false&select=*&order=created_at.desc&limit=1`,
+    { headers: { ...authHeaders(true) } },
+  )
+
+  if (!lookupRes.ok) return jsonResponse({ error: 'Lookup failed' }, 500, {}, [], origin)
+
+  const rows = await lookupRes.json()
+  const row = Array.isArray(rows) && rows.length ? rows[0] : null
+  if (!row) return jsonResponse({ error: 'No pending verification for this email' }, 404, {}, [], origin)
+
+  const token = Math.floor(100000 + Math.random() * 900000).toString()
+  const expiresAt = new Date(Date.now() + 20 * 60 * 1000).toISOString()
+
+  const updateRes = await fetch(`${SUPABASE_URL}/rest/v1/email_verifications?id=eq.${row.id}`, {
+    method: 'PATCH',
+    headers: {
+      ...authHeaders(true),
+      Prefer: 'return=representation',
+    },
+    body: JSON.stringify({ token, expires_at: expiresAt, attempts: (row.attempts || 0) + 1 }),
+  })
+
+  if (!updateRes.ok) return jsonResponse({ error: 'Failed to refresh verification' }, 500, {}, [], origin)
+
+  const sendResult = await sendVerificationEmail(email, token)
+  if (!sendResult.ok) return jsonResponse({ error: sendResult.error || 'Failed to send verification email' }, 502, {}, [], origin)
+
   return jsonResponse({ status: 'verification_sent' }, 200, {}, [], origin)
 }
 
@@ -354,6 +403,7 @@ serve(async (req) => {
   if (path.endsWith('/auth/logout') && req.method === 'POST') return handleLogout(req)
   if (path.endsWith('/auth/session') && req.method === 'GET') return handleSession(req)
   if (path.endsWith('/auth/signup') && req.method === 'POST') return handleSignup(req)
+  if (path.endsWith('/auth/resend') && req.method === 'POST') return handleResend(req)
   if (path.endsWith('/auth/verify') && req.method === 'POST') return handleVerify(req)
   if (path.endsWith('/auth/forgot') && req.method === 'POST') return handleForgot(req)
   if (path.endsWith('/auth/reset') && req.method === 'POST') return handleReset(req)
