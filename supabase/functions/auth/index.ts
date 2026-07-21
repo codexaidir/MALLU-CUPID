@@ -163,6 +163,41 @@ const fetchUser = async (accessToken: string) => {
   return res.json()
 }
 
+type AccountRole = 'creator' | 'user'
+
+const getAccount = async (userId: string) => {
+  const res = await fetch(
+    `${SUPABASE_URL}/rest/v1/user_accounts?id=eq.${userId}&select=id,role,name,email&limit=1`,
+    { headers: { ...authHeaders(true) } },
+  )
+  if (!res.ok) return null
+  const rows = await res.json().catch(() => [])
+  return Array.isArray(rows) && rows.length ? rows[0] : null
+}
+
+const userWithRole = async (user: Record<string, unknown>) => {
+  if (!user?.id) return user
+  const account = await getAccount(user.id as string)
+  const metadata = user.user_metadata && typeof user.user_metadata === 'object'
+    ? user.user_metadata as Record<string, unknown>
+    : {}
+  return {
+    ...user,
+    user_metadata: {
+      ...metadata,
+      role: account?.role || metadata.role || '',
+      name: account?.name || metadata.name || '',
+    },
+  }
+}
+
+const requireRole = async (req: Request, role: AccountRole) => {
+  const user = await requireUser(req)
+  if (!user) return null
+  const account = await getAccount(user.id)
+  return account?.role === role ? user : null
+}
+
 const handleLogin = async (req: Request) => {
   const origin = req.headers.get('origin')
   const { email, password } = await parseJson(req)
@@ -172,12 +207,41 @@ const handleLogin = async (req: Request) => {
   if (isAuthError(data)) return jsonResponse({ error: authErrorMessage(data, 'Login failed') }, 401, {}, [], origin)
   if (!data.access_token || !data.refresh_token) return jsonResponse({ error: 'Login did not return tokens' }, 500, {}, [], origin)
 
+  const account = await getAccount(data.user?.id)
+  if (account?.role !== 'creator') {
+    return jsonResponse({ error: "You don't have a creator account" }, 403, {}, [
+      clearCookie('sb-access-token'),
+      clearCookie('sb-refresh-token'),
+    ], origin)
+  }
+
   const cookies = [
     buildCookie('sb-access-token', data.access_token, data.expires_in || 3600),
     buildCookie('sb-refresh-token', data.refresh_token, 60 * 60 * 24 * 30),
   ]
 
-  return jsonResponse({ user: data.user }, 200, {}, cookies, origin)
+  return jsonResponse({ user: await userWithRole(data.user) }, 200, {}, cookies, origin)
+}
+
+const handleUserLogin = async (req: Request) => {
+  const origin = req.headers.get('origin')
+  const { email, password } = await parseJson(req)
+  if (!email || !password) return jsonResponse({ error: 'Missing credentials' }, 400, {}, [], origin)
+
+  const data = await signIn(String(email).trim(), String(password))
+  if (isAuthError(data)) return jsonResponse({ error: authErrorMessage(data, 'Login failed') }, 401, {}, [], origin)
+  if (!data.access_token || !data.refresh_token) return jsonResponse({ error: 'Login did not return tokens' }, 500, {}, [], origin)
+
+  const account = await getAccount(data.user?.id)
+  if (account?.role !== 'user') {
+    return jsonResponse({ error: "You don't have a user account" }, 403, {}, [], origin)
+  }
+
+  const cookies = [
+    buildCookie('sb-access-token', data.access_token, data.expires_in || 3600),
+    buildCookie('sb-refresh-token', data.refresh_token, 60 * 60 * 24 * 30),
+  ]
+  return jsonResponse({ user: await userWithRole(data.user) }, 200, {}, cookies, origin)
 }
 
 const handleLogout = async (req: Request) => {
@@ -208,7 +272,7 @@ const handleSession = async (req: Request) => {
 
   if (accessToken) {
     const user = await fetchUser(accessToken)
-    if (user?.id) return jsonResponse({ user }, 200, {}, [], origin)
+    if (user?.id) return jsonResponse({ user: await userWithRole(user) }, 200, {}, [], origin)
   }
 
   if (!refreshToken) return jsonResponse({ user: null }, 200, {}, [], origin)
@@ -223,7 +287,7 @@ const handleSession = async (req: Request) => {
   ]
 
   const user = await fetchUser(refreshData.access_token)
-  return jsonResponse({ user }, 200, {}, cookiesToSet, origin)
+  return jsonResponse({ user: user?.id ? await userWithRole(user) : null }, 200, {}, cookiesToSet, origin)
 }
 
 // Username rules: 6-25 chars; letters, numbers, underscore, dot, hyphen; no spaces.
@@ -412,7 +476,7 @@ const handleVerify = async (req: Request) => {
     headers: {
       ...authHeaders(true),
     },
-    body: JSON.stringify({ email, password, email_confirm: true, user_metadata: { username } }),
+    body: JSON.stringify({ email, password, email_confirm: true, user_metadata: { username, role: 'creator' } }),
   })
 
   if (!userRes.ok) {
@@ -448,6 +512,18 @@ const handleVerify = async (req: Request) => {
     return jsonResponse({ error: 'User created but profile failed' }, 500, {}, [], origin)
   }
 
+  await fetch(`${SUPABASE_URL}/rest/v1/user_accounts`, {
+    method: 'POST',
+    headers: { ...authHeaders(true), Prefer: 'resolution=merge-duplicates,return=minimal' },
+    body: JSON.stringify([{
+      id: userId,
+      role: 'creator',
+      email,
+      name: '',
+      updated_at: new Date().toISOString(),
+    }]),
+  })
+
   await fetch(`${SUPABASE_URL}/rest/v1/email_verifications?id=eq.${row.id}`, {
     method: 'PATCH',
     headers: {
@@ -468,6 +544,237 @@ const handleVerify = async (req: Request) => {
   ]
 
   return jsonResponse({ status: 'user_created', user: { id: userId, email } }, 200, {}, cookies, origin)
+}
+
+const normalizeEmail = (value: unknown) =>
+  typeof value === 'string' ? value.trim().toLowerCase() : ''
+
+const validEmail = (email: string) => /^\S+@\S+\.\S+$/.test(email)
+const validPassword = (password: string) => password.length >= 8 && password.length <= 128
+const validPublicSlug = (slug: string) => /^.{1,60}\d{5}$/.test(slug)
+
+const issueOtp = async (
+  email: string,
+  purpose: 'user_signup' | 'user_reset',
+  payload: Record<string, unknown>,
+) => {
+  await fetch(
+    `${SUPABASE_URL}/rest/v1/email_verifications?email=eq.${encodeURIComponent(email)}&purpose=eq.${purpose}&used=eq.false`,
+    {
+      method: 'PATCH',
+      headers: { ...authHeaders(true), Prefer: 'return=minimal' },
+      body: JSON.stringify({ used: true }),
+    },
+  )
+  const token = Math.floor(100000 + Math.random() * 900000).toString()
+  const expiresAt = new Date(Date.now() + 20 * 60 * 1000).toISOString()
+  const insert = await fetch(`${SUPABASE_URL}/rest/v1/email_verifications`, {
+    method: 'POST',
+    headers: { ...authHeaders(true), Prefer: 'return=minimal' },
+    body: JSON.stringify([{ email, token, purpose, payload, expires_at: expiresAt }]),
+  })
+  if (!insert.ok) return { ok: false, error: 'Failed to store verification' }
+  const sent = await sendVerificationEmail(email, token)
+  if (!sent.ok) {
+    await fetch(
+      `${SUPABASE_URL}/rest/v1/email_verifications?email=eq.${encodeURIComponent(email)}&purpose=eq.${purpose}&token=eq.${token}`,
+      { method: 'DELETE', headers: { ...authHeaders(true) } },
+    )
+    return sent
+  }
+  return { ok: true }
+}
+
+const handleUserSignup = async (req: Request) => {
+  const origin = req.headers.get('origin')
+  const body = await parseJson(req)
+  const email = normalizeEmail(body.email)
+  const name = typeof body.name === 'string' ? body.name.trim() : ''
+  const password = typeof body.password === 'string' ? body.password : ''
+  const redirectSlug = typeof body.redirect_slug === 'string' && validPublicSlug(body.redirect_slug)
+    ? body.redirect_slug.toLowerCase()
+    : ''
+
+  if (!validEmail(email)) return jsonResponse({ error: 'Enter a valid email address' }, 400, {}, [], origin)
+  if (name.length < 2 || name.length > 80) return jsonResponse({ error: 'Name must be 2-80 characters' }, 400, {}, [], origin)
+  if (!validPassword(password)) return jsonResponse({ error: 'Password must be 8-128 characters' }, 400, {}, [], origin)
+
+  const existing = await fetch(
+    `${SUPABASE_URL}/rest/v1/user_accounts?email=ilike.${encodeURIComponent(email)}&select=id,role&limit=1`,
+    { headers: { ...authHeaders(true) } },
+  )
+  const rows = existing.ok ? await existing.json().catch(() => []) : []
+  if (Array.isArray(rows) && rows.length) {
+    return jsonResponse({ error: 'An account already exists for this email' }, 409, {}, [], origin)
+  }
+
+  const issued = await issueOtp(email, 'user_signup', { name, password, redirect_slug: redirectSlug })
+  if (!issued.ok) return jsonResponse({ error: issued.error || 'Failed to send verification code' }, 502, {}, [], origin)
+  return jsonResponse({ status: 'verification_sent' }, 200, {}, [], origin)
+}
+
+const handleUserVerify = async (req: Request) => {
+  const origin = req.headers.get('origin')
+  const body = await parseJson(req)
+  const email = normalizeEmail(body.email)
+  const token = typeof body.token === 'string' ? body.token.trim() : ''
+  if (!validEmail(email) || !/^\d{6}$/.test(token)) {
+    return jsonResponse({ error: 'Enter a valid email and 6-digit code' }, 400, {}, [], origin)
+  }
+
+  const lookup = await fetch(
+    `${SUPABASE_URL}/rest/v1/email_verifications?email=eq.${encodeURIComponent(email)}&token=eq.${token}&purpose=eq.user_signup&used=eq.false&select=*&order=created_at.desc&limit=1`,
+    { headers: { ...authHeaders(true) } },
+  )
+  const rows = lookup.ok ? await lookup.json().catch(() => []) : []
+  const row = Array.isArray(rows) && rows.length ? rows[0] : null
+  if (!row || new Date(row.expires_at) < new Date()) {
+    return jsonResponse({ error: 'Invalid or expired verification code' }, 400, {}, [], origin)
+  }
+
+  const name = typeof row.payload?.name === 'string' ? row.payload.name.trim() : ''
+  const password = typeof row.payload?.password === 'string' ? row.payload.password : ''
+  if (!name || !validPassword(password)) return jsonResponse({ error: 'Verification payload invalid' }, 500, {}, [], origin)
+
+  const createdRes = await fetch(`${SUPABASE_URL}/auth/v1/admin/users`, {
+    method: 'POST',
+    headers: { ...authHeaders(true) },
+    body: JSON.stringify({
+      email,
+      password,
+      email_confirm: true,
+      user_metadata: { name, role: 'user' },
+    }),
+  })
+  if (!createdRes.ok) {
+    const errorBody = await createdRes.json().catch(() => ({}))
+    return jsonResponse({ error: authErrorMessage(errorBody, 'Failed to create user') }, 409, {}, [], origin)
+  }
+  const created = await createdRes.json()
+  const userId = created.id || created.user?.id
+  if (!userId) return jsonResponse({ error: 'User id missing' }, 500, {}, [], origin)
+
+  const accountRes = await fetch(`${SUPABASE_URL}/rest/v1/user_accounts`, {
+    method: 'POST',
+    headers: { ...authHeaders(true), Prefer: 'return=minimal' },
+    body: JSON.stringify([{ id: userId, role: 'user', name, email }]),
+  })
+  if (!accountRes.ok) {
+    await fetch(`${SUPABASE_URL}/auth/v1/admin/users/${userId}`, {
+      method: 'DELETE',
+      headers: { ...authHeaders(true) },
+    })
+    return jsonResponse({ error: 'Failed to create user profile' }, 500, {}, [], origin)
+  }
+
+  await fetch(`${SUPABASE_URL}/rest/v1/email_verifications?id=eq.${row.id}`, {
+    method: 'PATCH',
+    headers: { ...authHeaders(true), Prefer: 'return=minimal' },
+    body: JSON.stringify({ used: true }),
+  })
+
+  const signedIn = await signIn(email, password)
+  if (isAuthError(signedIn) || !signedIn.access_token || !signedIn.refresh_token) {
+    return jsonResponse({ error: 'Account created but automatic login failed' }, 500, {}, [], origin)
+  }
+  const cookies = [
+    buildCookie('sb-access-token', signedIn.access_token, signedIn.expires_in || 3600),
+    buildCookie('sb-refresh-token', signedIn.refresh_token, 60 * 60 * 24 * 30),
+  ]
+  return jsonResponse({
+    status: 'user_created',
+    user: await userWithRole(signedIn.user),
+    redirect_slug: row.payload?.redirect_slug || '',
+  }, 200, {}, cookies, origin)
+}
+
+const handleUserResend = async (req: Request) => {
+  const origin = req.headers.get('origin')
+  const email = normalizeEmail((await parseJson(req)).email)
+  if (!validEmail(email)) return jsonResponse({ error: 'Enter a valid email address' }, 400, {}, [], origin)
+  const lookup = await fetch(
+    `${SUPABASE_URL}/rest/v1/email_verifications?email=eq.${encodeURIComponent(email)}&purpose=eq.user_signup&used=eq.false&select=payload&order=created_at.desc&limit=1`,
+    { headers: { ...authHeaders(true) } },
+  )
+  const rows = lookup.ok ? await lookup.json().catch(() => []) : []
+  if (!Array.isArray(rows) || !rows.length) return jsonResponse({ error: 'No pending signup found' }, 404, {}, [], origin)
+  const issued = await issueOtp(email, 'user_signup', rows[0].payload || {})
+  if (!issued.ok) return jsonResponse({ error: issued.error || 'Failed to resend code' }, 502, {}, [], origin)
+  return jsonResponse({ status: 'verification_sent' }, 200, {}, [], origin)
+}
+
+const handleUserForgot = async (req: Request) => {
+  const origin = req.headers.get('origin')
+  const body = await parseJson(req)
+  const email = normalizeEmail(body.email)
+  const redirectSlug = typeof body.redirect_slug === 'string' && validPublicSlug(body.redirect_slug)
+    ? body.redirect_slug.toLowerCase()
+    : ''
+  if (!validEmail(email)) return jsonResponse({ error: 'Enter a valid email address' }, 400, {}, [], origin)
+
+  const accountRes = await fetch(
+    `${SUPABASE_URL}/rest/v1/user_accounts?email=ilike.${encodeURIComponent(email)}&role=eq.user&select=id&limit=1`,
+    { headers: { ...authHeaders(true) } },
+  )
+  const accounts = accountRes.ok ? await accountRes.json().catch(() => []) : []
+  if (!Array.isArray(accounts) || !accounts.length) {
+    return jsonResponse({ error: "You don't have a user account" }, 404, {}, [], origin)
+  }
+  const issued = await issueOtp(email, 'user_reset', {
+    user_id: accounts[0].id,
+    redirect_slug: redirectSlug,
+  })
+  if (!issued.ok) return jsonResponse({ error: issued.error || 'Failed to send reset code' }, 502, {}, [], origin)
+  return jsonResponse({ status: 'verification_sent' }, 200, {}, [], origin)
+}
+
+const handleUserReset = async (req: Request) => {
+  const origin = req.headers.get('origin')
+  const body = await parseJson(req)
+  const email = normalizeEmail(body.email)
+  const token = typeof body.token === 'string' ? body.token.trim() : ''
+  const password = typeof body.password === 'string' ? body.password : ''
+  if (!validEmail(email) || !/^\d{6}$/.test(token) || !validPassword(password)) {
+    return jsonResponse({ error: 'Valid email, 6-digit code, and 8+ character password are required' }, 400, {}, [], origin)
+  }
+  const lookup = await fetch(
+    `${SUPABASE_URL}/rest/v1/email_verifications?email=eq.${encodeURIComponent(email)}&token=eq.${token}&purpose=eq.user_reset&used=eq.false&select=*&order=created_at.desc&limit=1`,
+    { headers: { ...authHeaders(true) } },
+  )
+  const rows = lookup.ok ? await lookup.json().catch(() => []) : []
+  const row = Array.isArray(rows) && rows.length ? rows[0] : null
+  if (!row || new Date(row.expires_at) < new Date()) {
+    return jsonResponse({ error: 'Invalid or expired verification code' }, 400, {}, [], origin)
+  }
+  const userId = row.payload?.user_id
+  const account = userId ? await getAccount(userId) : null
+  if (!userId || account?.role !== 'user') return jsonResponse({ error: 'User account not found' }, 404, {}, [], origin)
+
+  const update = await fetch(`${SUPABASE_URL}/auth/v1/admin/users/${userId}`, {
+    method: 'PUT',
+    headers: { ...authHeaders(true) },
+    body: JSON.stringify({ password }),
+  })
+  if (!update.ok) return jsonResponse({ error: 'Failed to update password' }, 500, {}, [], origin)
+  await fetch(`${SUPABASE_URL}/rest/v1/email_verifications?id=eq.${row.id}`, {
+    method: 'PATCH',
+    headers: { ...authHeaders(true), Prefer: 'return=minimal' },
+    body: JSON.stringify({ used: true }),
+  })
+
+  const signedIn = await signIn(email, password)
+  if (isAuthError(signedIn) || !signedIn.access_token || !signedIn.refresh_token) {
+    return jsonResponse({ error: 'Password updated but automatic login failed' }, 500, {}, [], origin)
+  }
+  const cookies = [
+    buildCookie('sb-access-token', signedIn.access_token, signedIn.expires_in || 3600),
+    buildCookie('sb-refresh-token', signedIn.refresh_token, 60 * 60 * 24 * 30),
+  ]
+  return jsonResponse({
+    status: 'password_updated',
+    user: await userWithRole(signedIn.user),
+    redirect_slug: row.payload?.redirect_slug || '',
+  }, 200, {}, cookies, origin)
 }
 
 const AVATAR_EXT: Record<string, string> = {
@@ -596,6 +903,7 @@ const decoratePosts = async (posts: Array<Record<string, unknown>>) => {
  */
 const handlePublicProfile = async (req: Request, url: URL) => {
   const origin = req.headers.get('origin')
+  const viewer = await requireUser(req)
   const slug = (url.searchParams.get('slug') || '').trim().toLowerCase()
 
   const match = slug.match(/^(.{1,60}?)(\d{5})$/)
@@ -657,6 +965,16 @@ const handlePublicProfile = async (req: Request, url: URL) => {
     }
   })
 
+  let isFollowing = false
+  if (viewer?.id) {
+    const followRes = await fetch(
+      `${SUPABASE_URL}/rest/v1/follows?follower_id=eq.${viewer.id}&following_id=eq.${profile.id}&select=follower_id&limit=1`,
+      { headers: { ...authHeaders(true) } },
+    )
+    const followRows = followRes.ok ? await followRes.json().catch(() => []) : []
+    isFollowing = Array.isArray(followRows) && followRows.length > 0
+  }
+
   return jsonResponse({
     profile: {
       username: profile.username,
@@ -669,13 +987,61 @@ const handlePublicProfile = async (req: Request, url: URL) => {
       posts: postCountRes.ok ? countFrom(postCountRes) : posts.length,
       followers: followersRes.ok ? countFrom(followersRes) : 0,
     },
+    viewer: {
+      authenticated: Boolean(viewer?.id),
+      role: viewer?.id ? (await getAccount(viewer.id))?.role || '' : '',
+      is_following: isFollowing,
+    },
     posts: publicPosts,
   }, 200, {}, [], origin)
 }
 
-const handlePostUploadUrls = async (req: Request) => {
+const handlePublicFollow = async (req: Request) => {
   const origin = req.headers.get('origin')
   const user = await requireUser(req)
+  if (!user) return jsonResponse({ error: 'Login required' }, 401, {}, [], origin)
+  const account = await getAccount(user.id)
+  if (!account || !['user', 'creator'].includes(account.role)) {
+    return jsonResponse({ error: 'Valid account required' }, 403, {}, [], origin)
+  }
+
+  const body = await parseJson(req)
+  const slug = typeof body.slug === 'string' ? body.slug.trim().toLowerCase() : ''
+  const match = slug.match(/^(.{1,60}?)(\d{5})$/)
+  if (!match) return jsonResponse({ error: 'Creator not found' }, 404, {}, [], origin)
+  const profileRes = await fetch(
+    `${SUPABASE_URL}/rest/v1/profiles?public_serial=eq.${Number(match[2])}&username=eq.${encodeURIComponent(match[1])}&select=id&limit=1`,
+    { headers: { ...authHeaders(true) } },
+  )
+  const profiles = profileRes.ok ? await profileRes.json().catch(() => []) : []
+  const creator = Array.isArray(profiles) && profiles.length ? profiles[0] : null
+  if (!creator) return jsonResponse({ error: 'Creator not found' }, 404, {}, [], origin)
+  if (creator.id === user.id) return jsonResponse({ error: 'You cannot follow yourself' }, 400, {}, [], origin)
+
+  const existingRes = await fetch(
+    `${SUPABASE_URL}/rest/v1/follows?follower_id=eq.${user.id}&following_id=eq.${creator.id}&select=follower_id&limit=1`,
+    { headers: { ...authHeaders(true) } },
+  )
+  const existing = existingRes.ok ? await existingRes.json().catch(() => []) : []
+  const following = Array.isArray(existing) && existing.length > 0
+  if (following) {
+    await fetch(
+      `${SUPABASE_URL}/rest/v1/follows?follower_id=eq.${user.id}&following_id=eq.${creator.id}`,
+      { method: 'DELETE', headers: { ...authHeaders(true) } },
+    )
+  } else {
+    await fetch(`${SUPABASE_URL}/rest/v1/follows`, {
+      method: 'POST',
+      headers: { ...authHeaders(true), Prefer: 'return=minimal,resolution=ignore-duplicates' },
+      body: JSON.stringify([{ follower_id: user.id, following_id: creator.id }]),
+    })
+  }
+  return jsonResponse({ following: !following }, 200, {}, [], origin)
+}
+
+const handlePostUploadUrls = async (req: Request) => {
+  const origin = req.headers.get('origin')
+  const user = await requireRole(req, 'creator')
   if (!user) return jsonResponse({ error: 'Unauthorized' }, 401, {}, [], origin)
 
   const body = await parseJson(req)
@@ -728,7 +1094,7 @@ const handlePostUploadUrls = async (req: Request) => {
 
 const handleCreatePost = async (req: Request) => {
   const origin = req.headers.get('origin')
-  const user = await requireUser(req)
+  const user = await requireRole(req, 'creator')
   if (!user) return jsonResponse({ error: 'Unauthorized' }, 401, {}, [], origin)
 
   const body = await parseJson(req)
@@ -797,7 +1163,7 @@ const handleCreatePost = async (req: Request) => {
 
 const handleGetProfile = async (req: Request) => {
   const origin = req.headers.get('origin')
-  const user = await requireUser(req)
+  const user = await requireRole(req, 'creator')
   if (!user) return jsonResponse({ error: 'Unauthorized' }, 401, {}, [], origin)
 
   const [res, postsCountRes, followersCountRes, followingCountRes, postsRes] = await Promise.all([
@@ -853,6 +1219,8 @@ const handleProfile = async (req: Request) => {
 
   const user = await fetchUser(accessToken)
   if (!user?.id) return jsonResponse({ error: 'Unauthorized' }, 401, {}, [], origin)
+  const account = await getAccount(user.id)
+  if (account?.role !== 'creator') return jsonResponse({ error: 'Creator account required' }, 403, {}, [], origin)
 
   const body = await parseJson(req)
 
@@ -934,7 +1302,7 @@ const handleProfile = async (req: Request) => {
 
 const handleGetPayoutAccount = async (req: Request) => {
   const origin = req.headers.get('origin')
-  const user = await requireUser(req)
+  const user = await requireRole(req, 'creator')
   if (!user) return jsonResponse({ error: 'Unauthorized' }, 401, {}, [], origin)
 
   const res = await fetch(
@@ -948,7 +1316,7 @@ const handleGetPayoutAccount = async (req: Request) => {
 
 const handleSavePayoutAccount = async (req: Request) => {
   const origin = req.headers.get('origin')
-  const user = await requireUser(req)
+  const user = await requireRole(req, 'creator')
   if (!user) return jsonResponse({ error: 'Unauthorized' }, 401, {}, [], origin)
 
   const body = await parseJson(req)
@@ -2183,6 +2551,12 @@ serve(async (req) => {
   const isRoute = (name: string) => path.endsWith(`/auth/${name}`) || path.endsWith(`/${name}`)
 
   if (isRoute('login') && req.method === 'POST') return handleLogin(req)
+  if (isRoute('user-login') && req.method === 'POST') return handleUserLogin(req)
+  if (isRoute('user-signup') && req.method === 'POST') return handleUserSignup(req)
+  if (isRoute('user-verify') && req.method === 'POST') return handleUserVerify(req)
+  if (isRoute('user-resend') && req.method === 'POST') return handleUserResend(req)
+  if (isRoute('user-forgot') && req.method === 'POST') return handleUserForgot(req)
+  if (isRoute('user-reset') && req.method === 'POST') return handleUserReset(req)
   if (isRoute('logout') && req.method === 'POST') return handleLogout(req)
   if (isRoute('session') && req.method === 'GET') return handleSession(req)
   if (isRoute('signup') && req.method === 'POST') return handleSignup(req)
@@ -2207,6 +2581,7 @@ serve(async (req) => {
   if (isRoute('post-checkout') && req.method === 'POST') return handlePostCheckout(req)
   if (isRoute('post-verify-payment') && req.method === 'POST') return handleVerifyPostPayment(req)
   if (isRoute('public-profile') && req.method === 'GET') return handlePublicProfile(req, url)
+  if (isRoute('public-follow') && req.method === 'POST') return handlePublicFollow(req)
   if (isRoute('notifications') && req.method === 'GET') return handleGetNotifications(req)
   if (isRoute('notifications-read') && req.method === 'POST') return handleMarkNotificationsRead(req)
   if (isRoute('conversations') && req.method === 'GET') return handleGetConversations(req)

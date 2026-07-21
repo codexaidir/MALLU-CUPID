@@ -2,109 +2,77 @@ import React, { useEffect, useMemo, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { motion, AnimatePresence } from "motion/react";
 import {
-  Grid,
-  Heart,
-  LayoutDashboard,
-  Loader2,
-  LockKeyhole,
-  MessageCircle,
-  MonitorX,
-  Play,
-  PlaySquare,
-  Sparkles,
-  UserPlus,
-  X,
+  Download, Grid, Heart, LayoutDashboard, Loader2, LockKeyhole,
+  MessageCircle, MonitorX, Play, PlaySquare, Share, UserPlus, X,
 } from "lucide-react";
-import { getPublicProfile, type PublicProfileData } from "../lib/auth";
+import {
+  getPublicProfile, startConversation, togglePublicFollow,
+  type PublicProfileData, type PublicProfilePost,
+} from "../lib/auth";
+import { useAuth } from "../lib/useAuth";
 
-/**
- * Layered mobile-device detection. All signals are combined so spoofing a
- * single one (e.g. resizing a desktop window) is not enough:
- *  - user agent must identify a mobile OS/browser
- *  - the device must expose touch points
- *  - the primary pointer must be coarse (finger), per CSS media query
- */
-const detectMobileDevice = (): boolean => {
-  const ua = navigator.userAgent || "";
-  const uaMobile = /Android|iPhone|iPad|iPod|webOS|BlackBerry|IEMobile|Opera Mini|Mobile|Silk/i.test(ua);
-  const iPadOs = navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1;
-  const hasTouch = navigator.maxTouchPoints > 0 || "ontouchstart" in window;
-  const coarsePointer = window.matchMedia("(pointer: coarse)").matches;
-  return (uaMobile || iPadOs) && hasTouch && coarsePointer;
-};
-
-function useIsMobileDevice() {
-  const [isMobile, setIsMobile] = useState(detectMobileDevice);
-  useEffect(() => {
-    const recheck = () => setIsMobile(detectMobileDevice());
-    window.addEventListener("resize", recheck);
-    window.addEventListener("orientationchange", recheck);
-    return () => {
-      window.removeEventListener("resize", recheck);
-      window.removeEventListener("orientationchange", recheck);
-    };
-  }, []);
-  return isMobile;
+interface InstallPromptEvent extends Event {
+  prompt: () => Promise<void>;
+  userChoice: Promise<{ outcome: "accepted" | "dismissed" }>;
 }
 
-function DesktopBlockScreen() {
+const detectMobileDevice = () => {
+  const ua = navigator.userAgent || "";
+  const mobileUa = /Android|iPhone|iPad|iPod|webOS|BlackBerry|IEMobile|Opera Mini|Mobile|Silk/i.test(ua);
+  const iPadOs = navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1;
+  return (mobileUa || iPadOs) && navigator.maxTouchPoints > 0 && matchMedia("(pointer: coarse)").matches;
+};
+
+function useMobileDevice() {
+  const [mobile, setMobile] = useState(detectMobileDevice);
+  useEffect(() => {
+    const check = () => setMobile(detectMobileDevice());
+    addEventListener("resize", check);
+    addEventListener("orientationchange", check);
+    return () => {
+      removeEventListener("resize", check);
+      removeEventListener("orientationchange", check);
+    };
+  }, []);
+  return mobile;
+}
+
+function DesktopBlock() {
   return (
-    <div className="min-h-screen bg-zinc-50 flex items-center justify-center p-6">
-      <motion.div
-        initial={{ opacity: 0, y: 16 }}
-        animate={{ opacity: 1, y: 0 }}
-        className="max-w-md w-full bg-white rounded-3xl border border-zinc-200 shadow-xl shadow-rose-100/50 p-10 text-center"
-      >
-        <div className="w-16 h-16 rounded-2xl bg-rose-50 text-rose-500 flex items-center justify-center mx-auto mb-5">
-          <MonitorX className="w-8 h-8" />
-        </div>
-        <h1 className="text-xl font-bold text-zinc-900 mb-2">Mobile only</h1>
-        <p className="text-zinc-500 text-sm leading-relaxed">
-          This creator page is available on mobile devices only. Open this link on
-          your phone to view the profile.
-        </p>
-      </motion.div>
+    <div className="min-h-screen bg-zinc-950 flex items-center justify-center p-6">
+      <div className="max-w-sm bg-white rounded-3xl p-9 text-center">
+        <MonitorX className="w-10 h-10 text-rose-500 mx-auto mb-4" />
+        <h1 className="text-xl font-bold">Mobile only</h1>
+        <p className="text-sm text-zinc-500 mt-2">Open this creator link on a mobile device.</p>
+      </div>
     </div>
   );
 }
 
-function LoginSheet({ open, onClose, title, message }: {
-  open: boolean;
-  onClose: () => void;
-  title: string;
-  message: string;
-}) {
+function BottomSheet({ open, onClose, children }: { open: boolean; onClose: () => void; children: React.ReactNode }) {
   return (
     <AnimatePresence>
       {open && (
-        <div className="fixed inset-0 z-[120] flex items-end justify-center">
-          <motion.div
+        <div className="fixed inset-0 z-[150] flex items-end justify-center">
+          <motion.button
+            aria-label="Close"
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
-            className="absolute inset-0 bg-zinc-900/50 backdrop-blur-sm"
             onClick={onClose}
+            className="absolute inset-0 bg-black/55 backdrop-blur-sm"
           />
           <motion.div
             initial={{ y: "100%" }}
             animate={{ y: 0 }}
             exit={{ y: "100%" }}
-            transition={{ type: "spring", damping: 28, stiffness: 320 }}
-            className="relative w-full max-w-md bg-white rounded-t-3xl p-6 pb-10"
+            transition={{ type: "spring", damping: 28, stiffness: 300 }}
+            className="relative w-full max-w-md rounded-t-3xl bg-white p-6 pb-10"
           >
-            <div className="flex items-center justify-between mb-4">
-              <h3 className="text-lg font-bold text-zinc-900">{title}</h3>
-              <button onClick={onClose} className="p-2 -mr-2 rounded-full hover:bg-zinc-100" aria-label="Close">
-                <X className="w-5 h-5 text-zinc-500" />
-              </button>
-            </div>
-            <p className="text-sm text-zinc-500 leading-relaxed mb-6">{message}</p>
-            <button
-              disabled
-              className="w-full h-12 rounded-xl bg-rose-300 text-white font-bold text-sm cursor-not-allowed"
-            >
-              Login coming soon
+            <button onClick={onClose} className="absolute top-4 right-4 p-2 rounded-full bg-zinc-100">
+              <X className="w-4 h-4" />
             </button>
+            {children}
           </motion.div>
         </div>
       )}
@@ -113,237 +81,307 @@ function LoginSheet({ open, onClose, title, message }: {
 }
 
 export default function PublicProfilePage() {
-  const isMobile = useIsMobileDevice();
+  const mobile = useMobileDevice();
   const navigate = useNavigate();
-  const { username: slug } = useParams<{ username: string }>();
-
+  const { username: slug = "" } = useParams<{ username: string }>();
+  const { user } = useAuth();
   const [data, setData] = useState<PublicProfileData | null>(null);
-  const [isLoading, setIsLoading] = useState(true);
+  const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
-  const [activeTab, setActiveTab] = useState<"grid" | "video">("grid");
-  const [sheet, setSheet] = useState<null | "login" | "follow" | "chat">(null);
+  const [tab, setTab] = useState<"image" | "video">("image");
+  const [following, setFollowing] = useState(false);
+  const [actionLoading, setActionLoading] = useState(false);
+  const [installPrompt, setInstallPrompt] = useState<InstallPromptEvent | null>(null);
+  const [installHelp, setInstallHelp] = useState(false);
+  const [installed, setInstalled] = useState(matchMedia("(display-mode: standalone)").matches);
 
   useEffect(() => {
-    if (!slug) return;
     let cancelled = false;
     (async () => {
       const response = await getPublicProfile(slug);
       if (cancelled) return;
-      setIsLoading(false);
-      if (response.error || !response.profile) {
+      setLoading(false);
+      if (!response.profile) {
         setError(response.error || "Creator not found");
         return;
       }
-      setData(response as PublicProfileData);
+      const next = response as PublicProfileData;
+      setData(next);
+      setFollowing(next.viewer?.is_following || false);
     })();
     return () => {
       cancelled = true;
     };
   }, [slug]);
 
-  const filteredPosts = useMemo(
-    () =>
-      (data?.posts || []).filter((p) =>
-        activeTab === "grid" ? p.media_type === "image" : p.media_type === "video",
-      ),
-    [data, activeTab],
-  );
+  useEffect(() => {
+    const capture = (event: Event) => {
+      event.preventDefault();
+      setInstallPrompt(event as InstallPromptEvent);
+    };
+    const done = () => {
+      setInstalled(true);
+      setInstallPrompt(null);
+    };
+    addEventListener("beforeinstallprompt", capture);
+    addEventListener("appinstalled", done);
+    return () => {
+      removeEventListener("beforeinstallprompt", capture);
+      removeEventListener("appinstalled", done);
+    };
+  }, []);
 
-  if (!isMobile) return <DesktopBlockScreen />;
+  useEffect(() => {
+    if (!data) return;
+    document.title = `${data.profile.full_name || data.profile.username} | MalluCupid`;
+    return () => {
+      document.title = "MalluCupid";
+    };
+  }, [data]);
+
+  const posts = useMemo(
+    () => (data?.posts || []).filter((post) => post.media_type === tab),
+    [data, tab],
+  );
+  const hero = data?.posts.find((post) => post.media_type === "image" && post.media_url);
+  const userLogin = () => navigate(`/userlogin?redirect=${encodeURIComponent(slug)}`);
+
+  const follow = async () => {
+    if (!user) return userLogin();
+    setActionLoading(true);
+    const response = await togglePublicFollow(slug);
+    setActionLoading(false);
+    if (typeof response.following === "boolean") {
+      setFollowing(response.following);
+      setData((prev) =>
+        prev
+          ? {
+              ...prev,
+              stats: {
+                ...prev.stats,
+                followers: Math.max(0, prev.stats.followers + (response.following ? 1 : -1)),
+              },
+            }
+          : prev,
+      );
+    }
+  };
+
+  const chat = async () => {
+    if (!user) return userLogin();
+    if (!data) return;
+    setActionLoading(true);
+    const response = await startConversation(data.profile.username);
+    setActionLoading(false);
+    if (response.conversation_id) navigate(`/user-chat/${response.conversation_id}`);
+  };
+
+  const openPost = (post: PublicProfilePost) => {
+    if (!user) return userLogin();
+    navigate(`/view/${post.public_id}`);
+  };
+
+  const install = async () => {
+    if (installed) return;
+    if (installPrompt) {
+      await installPrompt.prompt();
+      const choice = await installPrompt.userChoice;
+      if (choice.outcome === "accepted") setInstallPrompt(null);
+    } else {
+      setInstallHelp(true);
+    }
+  };
+
+  if (!mobile) return <DesktopBlock />;
 
   return (
-    <div className="min-h-screen bg-zinc-50 flex flex-col">
-      {/* Fixed public header */}
-      <header className="fixed top-0 left-0 right-0 h-14 bg-white border-b border-zinc-200 z-[100] flex items-center justify-between px-4">
-        <div className="flex items-center gap-2">
-          <div className="w-8 h-8 bg-rose-500 rounded-lg flex items-center justify-center">
-            <LayoutDashboard className="w-4 h-4 text-white" />
+    <div className="min-h-screen bg-[#f4fff9] text-zinc-900">
+      <main className="w-full max-w-md mx-auto min-h-screen bg-white shadow-2xl">
+        <section className="relative">
+          <div className="absolute inset-x-0 top-0 z-20 h-20 bg-gradient-to-b from-black/55 to-transparent" />
+          <div className="absolute top-3 left-3 right-3 z-30 flex items-start justify-between text-white">
+            <div className="flex gap-4">
+              <button
+                className="flex flex-col items-center text-[11px]"
+                onClick={user ? undefined : userLogin}
+              >
+                <div className="w-7 h-7 rounded-full border border-white/80 flex items-center justify-center">
+                  <LayoutDashboard className="w-4 h-4" />
+                </div>
+                <span>{user ? "Account" : "Login"}</span>
+              </button>
+              <button onClick={follow} className="flex flex-col items-center text-[11px]">
+                <UserPlus className="w-5 h-5 mt-1" />
+                <span>{following ? "Following" : "Follow"}</span>
+              </button>
+            </div>
+            <button
+              onClick={install}
+              disabled={installed}
+              className="h-10 px-4 rounded-lg bg-rose-500 text-white text-sm font-semibold shadow-lg disabled:bg-emerald-500"
+            >
+              {installed ? "Installed" : "Install"}
+            </button>
           </div>
-          <span className="font-display font-bold text-zinc-900">MalluCupid</span>
-        </div>
-        <button
-          onClick={() => setSheet("login")}
-          className="h-9 px-5 rounded-full bg-rose-500 hover:bg-rose-600 active:scale-95 text-white text-sm font-bold transition-all"
-        >
-          Login
-        </button>
-      </header>
+          <div className="h-[238px] bg-zinc-900 overflow-hidden">
+            {hero ? (
+              <img src={hero.media_url} alt="" className="w-full h-full object-cover" />
+            ) : (
+              <div className="w-full h-full bg-gradient-to-br from-zinc-800 via-rose-950 to-zinc-950" />
+            )}
+          </div>
+        </section>
 
-      <main className="flex-1 pt-14 w-full max-w-md mx-auto">
-        {isLoading && (
-          <div className="flex items-center justify-center py-24">
+        {loading && (
+          <div className="py-24 flex justify-center">
             <Loader2 className="w-7 h-7 text-rose-500 animate-spin" />
           </div>
         )}
-
-        {!isLoading && error && (
-          <div className="px-6 py-20 text-center">
-            <div className="w-16 h-16 rounded-2xl bg-rose-50 text-rose-400 flex items-center justify-center mx-auto mb-4">
-              <UserPlus className="w-8 h-8" />
-            </div>
-            <p className="text-zinc-900 font-semibold mb-1">Creator not found</p>
-            <p className="text-zinc-500 text-sm">{error}</p>
+        {!loading && error && (
+          <div className="py-20 px-6 text-center">
+            <h1 className="font-bold">Creator not found</h1>
+            <p className="text-sm text-zinc-500 mt-2">{error}</p>
           </div>
         )}
-
-        {!isLoading && data && (
+        {!loading && data && (
           <>
-            {/* Profile section */}
-            <section className="bg-white px-4 pt-5 pb-5 border-b border-zinc-100">
-              <div className="flex items-center gap-5">
-                <div className="w-20 h-20 rounded-full overflow-hidden border border-zinc-200 shrink-0 bg-rose-50">
-                  {data.profile.avatar_url ? (
-                    <img
-                      src={data.profile.avatar_url}
-                      alt={data.profile.username}
-                      className="w-full h-full object-cover"
-                    />
-                  ) : (
-                    <div className="w-full h-full flex items-center justify-center text-rose-400 font-bold text-2xl">
-                      {(data.profile.full_name || data.profile.username).charAt(0).toUpperCase()}
-                    </div>
-                  )}
-                </div>
-                <div className="flex-1 min-w-0">
-                  <h1 className="text-base font-bold text-zinc-900 truncate">
-                    {data.profile.username}
-                  </h1>
-                  <p className="text-sm text-zinc-500 truncate">{data.profile.full_name}</p>
-                  <div className="flex items-center gap-6 mt-2.5">
-                    <div className="text-center">
-                      <p className="text-sm font-bold text-zinc-900 leading-none">{data.stats.posts}</p>
-                      <p className="text-[11px] text-zinc-500 mt-1">posts</p>
-                    </div>
-                    <div className="text-center">
-                      <p className="text-sm font-bold text-zinc-900 leading-none">{data.stats.followers}</p>
-                      <p className="text-[11px] text-zinc-500 mt-1">followers</p>
-                    </div>
+            <section className="bg-[#effff7] px-6 pt-7 pb-8 text-center">
+              <div className="w-24 h-24 rounded-full ring-4 ring-white shadow-lg overflow-hidden mx-auto -mt-20 relative z-20 bg-rose-100">
+                {data.profile.avatar_url ? (
+                  <img
+                    src={data.profile.avatar_url}
+                    alt={data.profile.username}
+                    className="w-full h-full object-cover"
+                  />
+                ) : (
+                  <div className="w-full h-full flex items-center justify-center text-3xl font-bold text-rose-500">
+                    {(data.profile.full_name || data.profile.username)[0].toUpperCase()}
                   </div>
+                )}
+              </div>
+              <h1 className="mt-4 text-2xl font-semibold text-rose-500">
+                Hi, I'm {data.profile.full_name || data.profile.username}
+              </h1>
+              <p className="text-sm font-semibold text-zinc-700 mt-1">@{data.profile.username}</p>
+              <div className="flex justify-center gap-10 mt-4">
+                <div>
+                  <strong>{data.stats.posts}</strong>
+                  <span className="block text-xs text-zinc-500">posts</span>
+                </div>
+                <div>
+                  <strong>{data.stats.followers}</strong>
+                  <span className="block text-xs text-zinc-500">followers</span>
                 </div>
               </div>
-
               {data.profile.bio && (
-                <p className="text-sm text-zinc-700 leading-relaxed mt-4 whitespace-pre-line">
-                  {data.profile.bio}
-                </p>
+                <p className="mt-5 text-[15px] leading-6 text-zinc-600">{data.profile.bio}</p>
               )}
-
-              <div className="flex items-center gap-3 mt-4">
+              <div className="grid grid-cols-2 gap-3 mt-6">
                 <button
-                  onClick={() => setSheet("follow")}
-                  className="flex-1 h-10 rounded-xl bg-rose-500 hover:bg-rose-600 active:scale-[0.98] text-white text-sm font-bold transition-all flex items-center justify-center gap-2"
+                  disabled={actionLoading}
+                  onClick={follow}
+                  className="h-11 rounded-lg bg-rose-500 text-white font-semibold text-sm flex items-center justify-center gap-2 disabled:opacity-60"
                 >
-                  <UserPlus className="w-4 h-4" /> Follow
+                  <UserPlus className="w-4 h-4" />
+                  {following ? "Following" : "Follow"}
                 </button>
                 <button
-                  onClick={() => setSheet("chat")}
-                  className="flex-1 h-10 rounded-xl border border-zinc-300 bg-white hover:bg-zinc-50 active:scale-[0.98] text-zinc-900 text-sm font-bold transition-all flex items-center justify-center gap-2"
+                  disabled={actionLoading}
+                  onClick={chat}
+                  className="h-11 rounded-lg bg-rose-500 text-white font-semibold text-sm flex items-center justify-center gap-2 disabled:opacity-60"
                 >
-                  <MessageCircle className="w-4 h-4" /> Chat
+                  <MessageCircle className="w-4 h-4" />
+                  Chat Now
                 </button>
               </div>
             </section>
 
-            {/* Photo / video separator tabs */}
-            <div className="bg-white sticky top-14 z-[90] border-b border-zinc-200 grid grid-cols-2">
-              <button
-                onClick={() => setActiveTab("grid")}
-                className={`flex items-center justify-center py-3 border-b-2 transition-colors ${
-                  activeTab === "grid"
-                    ? "text-zinc-900 border-zinc-900"
-                    : "text-zinc-400 border-transparent"
-                }`}
-                aria-label="Photos"
-              >
-                <Grid className="w-5 h-5" />
-              </button>
-              <button
-                onClick={() => setActiveTab("video")}
-                className={`flex items-center justify-center py-3 border-b-2 transition-colors ${
-                  activeTab === "video"
-                    ? "text-zinc-900 border-zinc-900"
-                    : "text-zinc-400 border-transparent"
-                }`}
-                aria-label="Videos"
-              >
-                <PlaySquare className="w-5 h-5" />
-              </button>
-            </div>
-
-            {/* Posts grid */}
-            {filteredPosts.length > 0 ? (
-              <div className="grid grid-cols-3 gap-[2px] bg-white">
-                {filteredPosts.map((post) => (
-                  <button
-                    key={post.public_id}
-                    onClick={() => setSheet("login")}
-                    className="relative aspect-square overflow-hidden bg-zinc-100 group"
-                  >
-                    {post.is_paid || !post.media_url ? (
-                      <div className="absolute inset-0 bg-gradient-to-br from-rose-100 via-rose-50 to-zinc-100 flex flex-col items-center justify-center">
-                        <div className="p-2 bg-white/80 backdrop-blur rounded-full shadow-sm">
-                          <LockKeyhole className="w-4 h-4 text-zinc-900" />
-                        </div>
-                        {post.is_paid && (
-                          <span className="mt-1.5 text-[10px] font-bold text-zinc-700">₹{post.price}</span>
+            <section className="bg-[#effff7] min-h-[68vh] px-4 pb-20">
+              <h2 className="text-xl font-semibold text-rose-500 pt-1 pb-4">Exclusive Content</h2>
+              <div className="grid grid-cols-2 border-b border-emerald-100 mb-4">
+                <button
+                  onClick={() => setTab("image")}
+                  className={`py-3 flex justify-center border-b-2 ${
+                    tab === "image" ? "border-rose-500 text-rose-500" : "border-transparent text-zinc-400"
+                  }`}
+                >
+                  <Grid className="w-5 h-5" />
+                </button>
+                <button
+                  onClick={() => setTab("video")}
+                  className={`py-3 flex justify-center border-b-2 ${
+                    tab === "video" ? "border-rose-500 text-rose-500" : "border-transparent text-zinc-400"
+                  }`}
+                >
+                  <PlaySquare className="w-5 h-5" />
+                </button>
+              </div>
+              {posts.length ? (
+                <div className="grid grid-cols-2 gap-3">
+                  {posts.map((post) => (
+                    <button
+                      key={post.public_id}
+                      onClick={() => openPost(post)}
+                      className="rounded-2xl overflow-hidden bg-white shadow-sm border border-emerald-100 text-left"
+                    >
+                      <div className="relative aspect-[4/5] bg-zinc-900 overflow-hidden">
+                        {post.is_paid || !post.media_url ? (
+                          <div className="absolute inset-0 bg-gradient-to-br from-zinc-700 to-zinc-950 flex flex-col items-center justify-center text-white">
+                            <div className="w-12 h-12 rounded-full bg-white flex items-center justify-center">
+                              <LockKeyhole className="w-6 h-6 text-zinc-900" />
+                            </div>
+                            <strong className="mt-4 text-sm">Exclusive Content</strong>
+                            <span className="mt-1 text-xs text-zinc-300">Unlock to view</span>
+                            <span className="mt-4 bg-white text-zinc-900 rounded-full px-4 py-2 text-xs font-bold">
+                              Unlock for ₹{post.price}
+                            </span>
+                          </div>
+                        ) : post.media_type === "video" ? (
+                          <>
+                            <video
+                              src={post.media_url}
+                              muted
+                              playsInline
+                              preload="metadata"
+                              className="w-full h-full object-cover"
+                            />
+                            <Play className="absolute inset-0 m-auto w-8 h-8 text-white fill-white" />
+                          </>
+                        ) : (
+                          <img src={post.media_url} alt="" className="w-full h-full object-cover" />
                         )}
                       </div>
-                    ) : post.media_type === "video" ? (
-                      <video
-                        src={post.media_url}
-                        className="w-full h-full object-cover pointer-events-none"
-                        playsInline
-                        muted
-                        preload="metadata"
-                      />
-                    ) : (
-                      <img
-                        src={post.media_url}
-                        alt=""
-                        className="w-full h-full object-cover"
-                        loading="lazy"
-                        draggable={false}
-                      />
-                    )}
-                    {post.media_type === "video" && !post.is_paid && (
-                      <span className="absolute inset-0 flex items-center justify-center">
-                        <span className="p-1.5 bg-black/40 backdrop-blur-sm rounded-full">
-                          <Play className="w-3.5 h-3.5 text-white fill-white" />
-                        </span>
-                      </span>
-                    )}
-                    {post.media_count > 1 && (
-                      <span className="absolute top-1.5 right-1.5 px-1.5 py-0.5 bg-black/40 backdrop-blur-sm rounded-full text-white text-[9px] font-bold">
-                        1/{post.media_count}
-                      </span>
-                    )}
-                  </button>
-                ))}
-              </div>
-            ) : (
-              <div className="py-16 text-center text-sm text-zinc-400">
-                No {activeTab === "video" ? "video" : "photo"} posts yet.
-              </div>
-            )}
-
-            {/* Be a creator CTA */}
-            <section className="px-4 py-8 mt-auto">
-              <div className="rounded-3xl bg-gradient-to-br from-rose-500 to-rose-400 p-6 text-white shadow-lg shadow-rose-200">
-                <div className="flex items-center gap-2 mb-2">
-                  <Sparkles className="w-5 h-5" />
-                  <h2 className="text-lg font-bold">Be a creator</h2>
+                      {post.is_paid && (
+                        <div className="p-3 flex justify-between text-xs">
+                          <span>Premium post</span>
+                          <span className="text-rose-500 font-bold">₹{post.price}</span>
+                        </div>
+                      )}
+                    </button>
+                  ))}
                 </div>
-                <p className="text-sm text-rose-50 leading-relaxed mb-5">
-                  Sell your exclusive content, grow your fans, and get paid directly.
+              ) : (
+                <div className="py-16 text-center text-sm text-zinc-400">
+                  No {tab === "image" ? "photo" : "video"} posts yet.
+                </div>
+              )}
+            </section>
+
+            <section className="bg-white px-5 pt-24 pb-12 border-t border-rose-100">
+              <div className="rounded-3xl bg-gradient-to-br from-rose-500 to-pink-500 p-7 text-white shadow-xl shadow-rose-200/60">
+                <Heart className="w-8 h-8 fill-white mb-4" />
+                <h2 className="text-2xl font-bold">Be a creator</h2>
+                <p className="text-sm leading-6 text-rose-50 mt-2">
+                  Build your audience and sell exclusive photos and videos from your own page.
                 </p>
                 <button
                   onClick={() => navigate("/signup")}
-                  className="w-full h-11 rounded-xl bg-white text-rose-500 font-bold text-sm active:scale-[0.98] transition-transform flex items-center justify-center gap-2"
+                  className="w-full h-12 mt-6 rounded-xl bg-white text-rose-500 font-bold"
                 >
-                  <Heart className="w-4 h-4 fill-rose-500" /> Start Earning
+                  Start Earning
                 </button>
               </div>
-              <p className="text-center text-[11px] text-zinc-400 mt-6">
+              <p className="text-center text-xs text-zinc-400 mt-8">
                 © {new Date().getFullYear()} MalluCupid
               </p>
             </section>
@@ -351,18 +389,15 @@ export default function PublicProfilePage() {
         )}
       </main>
 
-      <LoginSheet
-        open={sheet !== null}
-        onClose={() => setSheet(null)}
-        title={sheet === "follow" ? "Login to follow" : sheet === "chat" ? "Login to chat" : "Login"}
-        message={
-          sheet === "follow"
-            ? `Create an account to follow ${data?.profile.username || "this creator"} and never miss a post.`
-            : sheet === "chat"
-            ? `Create an account to chat with ${data?.profile.username || "this creator"}.`
-            : "Log in to unlock posts, follow creators, and chat."
-        }
-      />
+      <BottomSheet open={installHelp} onClose={() => setInstallHelp(false)}>
+        <Download className="w-9 h-9 text-rose-500 mb-4" />
+        <h2 className="text-xl font-bold">Install this page</h2>
+        <p className="text-sm text-zinc-500 mt-2 leading-6">
+          On Android Chrome, open the browser menu and tap <strong>Install app</strong> or{" "}
+          <strong>Add to Home screen</strong>. On iPhone Safari, tap{" "}
+          <Share className="inline w-4 h-4" /> Share, then <strong>Add to Home Screen</strong>.
+        </p>
+      </BottomSheet>
     </div>
   );
 }

@@ -37,7 +37,8 @@ const formatTime = (seconds: number) => {
 export default function MediaViewerPage() {
   const { username, postId } = useParams<{ username: string; postId: string }>();
   const navigate = useNavigate();
-  const base = `/${username}`;
+  const base = username ? `/${username}` : "";
+  const goBack = () => username ? navigate(base) : navigate(-1);
 
   const [post, setPost] = useState<PostDetail | null>(null);
   const [isLoading, setIsLoading] = useState(true);
@@ -99,7 +100,7 @@ export default function MediaViewerPage() {
     setIsDeleting(true);
     const response = await deletePost(post.public_id);
     if (response.status === "post_deleted") {
-      navigate(base, { replace: true });
+      username ? navigate(base, { replace: true }) : navigate(-1);
     } else {
       setError(response.error || "Failed to delete post");
       setIsDeleting(false);
@@ -191,7 +192,7 @@ export default function MediaViewerPage() {
       <div className="absolute top-0 left-0 right-0 z-30 flex items-center justify-between px-3 py-3 bg-gradient-to-b from-black/70 to-transparent">
         <div className="flex items-center gap-3 min-w-0">
           <button
-            onClick={() => navigate(base)}
+            onClick={goBack}
             aria-label="Back"
             className="p-2 text-white hover:bg-white/10 rounded-full transition-colors"
           >
@@ -253,7 +254,11 @@ export default function MediaViewerPage() {
                       </>
                     ) : (
                       <button
-                        onClick={() => { setIsMenuOpen(false); navigate(`${base}/post/${post.public_id}/report`); }}
+                        onClick={() => {
+                          setIsMenuOpen(false);
+                          const owner = post.owner?.username;
+                          if (owner) navigate(`/${owner}/post/${post.public_id}/report`);
+                        }}
                         className="w-full flex items-center gap-3 px-4 py-3.5 text-rose-600 hover:bg-rose-50 transition-colors text-left"
                       >
                         <Flag className="w-4 h-4" />
@@ -278,7 +283,7 @@ export default function MediaViewerPage() {
             <p className="text-white font-semibold mb-1">Couldn't load this post</p>
             <p className="text-white/60 text-sm mb-6">{error}</p>
             <button
-              onClick={() => navigate(base)}
+              onClick={goBack}
               className="px-6 py-2.5 bg-white text-zinc-900 rounded-full text-sm font-bold"
             >
               Go back

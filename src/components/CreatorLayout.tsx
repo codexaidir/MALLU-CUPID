@@ -19,7 +19,10 @@ export default function CreatorLayout() {
   const [checking, setChecking] = useState(true);
 
   useEffect(() => {
-    if (!user) return;
+    if (!user || user.user_metadata?.role !== "creator") {
+      setChecking(false);
+      return;
+    }
     let cancelled = false;
     (async () => {
       const response = await getProfile();
@@ -43,6 +46,9 @@ export default function CreatorLayout() {
 
   if (!user) {
     return <Navigate to="/login" replace />;
+  }
+  if (user.user_metadata?.role !== "creator") {
+    return <Navigate to="/userlogin" replace />;
   }
 
   if (canonical && username !== canonical) {

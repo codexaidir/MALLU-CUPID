@@ -31,6 +31,10 @@ import PrivacyPolicyPage from "./pages/PrivacyPolicyPage";
 import RefundPolicyPage from "./pages/RefundPolicyPage";
 import ContactUsPage from "./pages/ContactUsPage";
 import PublicProfilePage from "./pages/PublicProfilePage";
+import UserLogin from "./pages/UserLogin";
+import UserSignup from "./pages/UserSignup";
+import UserOtpVerify from "./pages/UserOtpVerify";
+import UserPasswordReset from "./pages/UserPasswordReset";
 
 function LandingPage() {
   return (
@@ -126,6 +130,12 @@ export default function App() {
             <Route path="/privacy-policy" element={<AuthLayout><PrivacyPolicyPage /></AuthLayout>} />
             <Route path="/refund-policy" element={<AuthLayout><RefundPolicyPage /></AuthLayout>} />
             <Route path="/contact-us" element={<AuthLayout><ContactUsPage /></AuthLayout>} />
+            <Route path="/userlogin" element={<UserLogin />} />
+            <Route path="/usersignup" element={<UserSignup />} />
+            <Route path="/userotpverify" element={<UserOtpVerify />} />
+            <Route path="/userpasswordreset" element={<UserPasswordReset />} />
+            <Route path="/view/:postId" element={<MediaViewerPage />} />
+            <Route path="/user-chat/:conversationId" element={<ChatPage />} />
 
             {/* Legacy paths redirect to /<username>/... */}
             <Route path="/dashboard" element={<LegacyRedirect />} />

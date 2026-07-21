@@ -27,6 +27,35 @@ export async function login(email: string, password: string) {
   return apiPost('/login', { email, password });
 }
 
+export async function userLogin(email: string, password: string) {
+  return apiPost('/user-login', { email, password });
+}
+
+export async function userSignup(email: string, name: string, password: string, redirectSlug: string) {
+  return apiPost('/user-signup', {
+    email,
+    name,
+    password,
+    redirect_slug: redirectSlug,
+  });
+}
+
+export async function userVerify(email: string, token: string) {
+  return apiPost('/user-verify', { email, token });
+}
+
+export async function userResend(email: string) {
+  return apiPost('/user-resend', { email });
+}
+
+export async function userForgot(email: string, redirectSlug: string) {
+  return apiPost('/user-forgot', { email, redirect_slug: redirectSlug });
+}
+
+export async function userReset(email: string, token: string, password: string) {
+  return apiPost('/user-reset', { email, token, password });
+}
+
 export async function logout() {
   return apiPost('/logout', {});
 }
@@ -329,12 +358,21 @@ export interface PublicProfileData {
     serial: string;
   };
   stats: { posts: number; followers: number };
+  viewer: {
+    authenticated: boolean;
+    role: 'creator' | 'user' | '';
+    is_following: boolean;
+  };
   posts: PublicProfilePost[];
 }
 
 /** Guest endpoint: no auth required. Slug is <username><5-digit serial>. */
 export async function getPublicProfile(slug: string): Promise<Partial<PublicProfileData> & { error?: string }> {
   return apiGet(`/public-profile?slug=${encodeURIComponent(slug)}`);
+}
+
+export async function togglePublicFollow(slug: string): Promise<{ following?: boolean; error?: string }> {
+  return apiPost('/public-follow', { slug });
 }
 
 export interface NotificationItem {

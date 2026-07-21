@@ -35,7 +35,7 @@ const dayLabel = (iso: string) => {
 export default function ChatPage() {
   const { username, conversationId } = useParams<{ username: string; conversationId: string }>();
   const navigate = useNavigate();
-  const inboxPath = `/${username}/inbox`;
+  const goBack = () => (username ? navigate(`/${username}/inbox`) : navigate(-1));
 
   const [conversation, setConversation] = useState<ChatConversation | null>(null);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
@@ -215,7 +215,7 @@ export default function ChatPage() {
     if (!conversationId || isBusy) return;
     setIsBusy(true);
     await deleteChat(conversationId, mode);
-    navigate(inboxPath, { replace: true });
+    navigate(username ? `/${username}/inbox` : -1, { replace: true });
   };
 
   const handleBlockToggle = async () => {
@@ -280,7 +280,7 @@ export default function ChatPage() {
           </>
         ) : (
           <>
-            <button onClick={() => navigate(inboxPath)} aria-label="Back" className="p-2 text-zinc-700 hover:bg-zinc-100 rounded-full">
+            <button onClick={goBack} aria-label="Back" className="p-2 text-zinc-700 hover:bg-zinc-100 rounded-full">
               <ArrowLeft className="w-5 h-5" />
             </button>
             <div className="flex items-center gap-2.5 flex-1 min-w-0">
@@ -384,7 +384,7 @@ export default function ChatPage() {
           <div className="text-center py-20">
             <AlertCircle className="w-8 h-8 text-rose-500 mx-auto mb-3" />
             <p className="text-zinc-700 font-medium mb-4">{loadError}</p>
-            <button onClick={() => navigate(inboxPath)} className="px-6 py-2.5 bg-rose-500 text-white rounded-full text-sm font-bold">
+            <button onClick={goBack} className="px-6 py-2.5 bg-rose-500 text-white rounded-full text-sm font-bold">
               Back to inbox
             </button>
           </div>
