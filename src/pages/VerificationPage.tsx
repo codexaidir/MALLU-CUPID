@@ -1,11 +1,10 @@
 import React, { useState, useRef } from "react";
 import { motion, AnimatePresence } from "motion/react";
-import { Link, useNavigate } from "react-router-dom";
+import { Link, useNavigate, useParams } from "react-router-dom";
 import { LogOut, LayoutDashboard, Bell, ShieldCheck, Wallet, Inbox, ArrowLeft, Camera, UploadCloud, CheckCircle2, AlertCircle, Building2, Smartphone, Check, Loader2 } from "lucide-react";
-import { MobileHeader } from "../components/MobileHeader";
-import { MobileNavbar } from "../components/MobileNavbar";
-
 export default function VerificationPage() {
+  const { username } = useParams<{ username: string }>();
+  const base = `/${username}`;
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
   const [isSignOutModalOpen, setIsSignOutModalOpen] = useState(false);
   
@@ -81,7 +80,7 @@ export default function VerificationPage() {
         {isExpanded && <span className="font-display font-bold text-lg text-zinc-900">Verification</span>}
       </div>
       <div className={`flex-grow flex flex-col space-y-4 w-full ${isExpanded ? 'items-stretch' : 'items-center'}`}>
-        <Link to="/dashboard" className={`p-3 text-zinc-500 hover:bg-zinc-50 hover:text-zinc-900 rounded-xl transition-colors group relative ${isExpanded ? 'flex items-center gap-3' : ''}`}>
+        <Link to={base} className={`p-3 text-zinc-500 hover:bg-zinc-50 hover:text-zinc-900 rounded-xl transition-colors group relative ${isExpanded ? 'flex items-center gap-3' : ''}`}>
           <LayoutDashboard className="w-6 h-6 shrink-0" />
           {isExpanded ? <span className="font-semibold">Dashboard</span> : <span className="absolute left-full ml-4 px-2 py-1 bg-zinc-800 text-white text-xs rounded opacity-0 group-hover:opacity-100 pointer-events-none whitespace-nowrap z-50">Dashboard</span>}
         </Link>
@@ -119,7 +118,6 @@ export default function VerificationPage() {
 
   return (
     <div className="min-h-screen bg-zinc-50 flex">
-      <MobileHeader />
       {/* Desktop Sidebar */}
       <aside className="hidden md:block w-20 fixed inset-y-0 z-50">
         <SidebarContent />
@@ -154,7 +152,7 @@ export default function VerificationPage() {
         {/* Header */}
         <header className="bg-white border-b border-zinc-200 sticky top-0 z-30 h-16 hidden md:flex items-center px-6">
           <div className="flex-1 md:flex-none flex items-center">
-             <Link to="/dashboard" className="hidden md:inline-flex items-center gap-2 text-sm font-medium text-zinc-500 hover:text-zinc-900 transition-colors">
+             <Link to={base} className="hidden md:inline-flex items-center gap-2 text-sm font-medium text-zinc-500 hover:text-zinc-900 transition-colors">
               <ArrowLeft className="w-4 h-4" /> Back to Dashboard
             </Link>
           </div>
@@ -429,7 +427,6 @@ export default function VerificationPage() {
           </div>
         )}
       </AnimatePresence>
-      <MobileNavbar />
     </div>
   );
 }

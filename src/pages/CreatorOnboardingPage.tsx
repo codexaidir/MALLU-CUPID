@@ -3,12 +3,14 @@ import { motion, AnimatePresence } from "motion/react";
 import { Camera, ArrowRight, User, RefreshCw, Loader2, AlertCircle } from "lucide-react";
 import { useNavigate } from "react-router-dom";
 import { getProfile, updateProfile } from "../lib/auth";
+import { useAuth } from "../lib/useAuth";
 
 const ACCEPTED_TYPES = ["image/jpeg", "image/jpg", "image/png", "image/webp", "image/gif"];
 const MAX_SIZE = 5 * 1024 * 1024;
 
 export default function CreatorOnboardingPage() {
   const navigate = useNavigate();
+  const { refreshSession } = useAuth();
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const [loadingProfile, setLoadingProfile] = useState(true);
@@ -91,7 +93,8 @@ export default function CreatorOnboardingPage() {
       setError(response.error);
       return;
     }
-    navigate("/dashboard", { replace: true });
+    await refreshSession();
+    navigate(username ? `/${username}` : "/dashboard", { replace: true });
   };
 
   if (loadingProfile) {

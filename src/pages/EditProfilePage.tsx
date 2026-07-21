@@ -1,8 +1,6 @@
 import React, { useEffect, useRef, useState } from "react";
-import { useNavigate } from "react-router-dom";
+import { useNavigate, useParams } from "react-router-dom";
 import { AlertCircle, ArrowLeft, Camera, Loader2 } from "lucide-react";
-import { MobileHeader } from "../components/MobileHeader";
-import { MobileNavbar } from "../components/MobileNavbar";
 import { getProfile, updateProfile, type Profile } from "../lib/auth";
 
 const ACCEPTED_TYPES = ["image/jpeg", "image/jpg", "image/png", "image/webp", "image/gif"];
@@ -21,6 +19,7 @@ type EditForm = {
 
 export default function EditProfilePage() {
   const navigate = useNavigate();
+  const { username: routeUsername } = useParams<{ username: string }>();
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [editForm, setEditForm] = useState<EditForm>({
     name: '',
@@ -116,7 +115,7 @@ export default function EditProfilePage() {
       setError(response.error);
       return;
     }
-    navigate('/dashboard', { replace: true });
+    navigate(`/${editForm.username || routeUsername}`, { replace: true });
   };
 
   if (isLoading) {
@@ -125,10 +124,9 @@ export default function EditProfilePage() {
 
   return (
     <div className="min-h-screen bg-zinc-50 flex flex-col md:items-center md:justify-center md:p-8 pt-14 pb-14 md:pt-8 md:pb-8">
-      <MobileHeader />
       <div className="w-full max-w-xl bg-white md:rounded-3xl shadow-none md:shadow-xl border-x-0 border-y-0 md:border border-zinc-100 p-6 sm:p-8 flex-grow md:flex-grow-0">
         <div className="flex items-center gap-4 mb-8">
-          <button onClick={() => navigate('/dashboard')} className="p-2 -ml-2 rounded-full hover:bg-zinc-100 transition-colors">
+          <button onClick={() => navigate(`/${routeUsername}`)} className="p-2 -ml-2 rounded-full hover:bg-zinc-100 transition-colors">
             <ArrowLeft className="w-6 h-6 text-zinc-900" />
           </button>
           <h2 className="text-2xl font-bold text-zinc-900">Edit Profile</h2>
@@ -280,7 +278,6 @@ export default function EditProfilePage() {
           </div>
         </form>
       </div>
-      <MobileNavbar />
     </div>
   );
 }

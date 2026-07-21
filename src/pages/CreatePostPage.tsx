@@ -1,5 +1,5 @@
 import React, { useMemo, useRef, useState } from "react";
-import { useNavigate, useSearchParams } from "react-router-dom";
+import { useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { motion, AnimatePresence } from "motion/react";
 import Cropper, { type Area } from "react-easy-crop";
 import {
@@ -14,8 +14,6 @@ import {
   AlertCircle,
   Sparkles,
 } from "lucide-react";
-import { MobileHeader } from "../components/MobileHeader";
-import { MobileNavbar } from "../components/MobileNavbar";
 import { createPost, createPostUploadUrls, uploadFileWithProgress } from "../lib/auth";
 
 const IMAGE_TYPES = ["image/jpeg", "image/jpg", "image/png"];
@@ -81,6 +79,8 @@ async function cropTo1080x1350(item: PhotoItem): Promise<Blob> {
 
 export default function CreatePostPage() {
   const navigate = useNavigate();
+  const { username } = useParams<{ username: string }>();
+  const profilePath = `/${username}`;
   const [searchParams] = useSearchParams();
   const mediaType = (searchParams.get("type") === "video" ? "video" : "photo") as "photo" | "video";
 
@@ -244,7 +244,6 @@ export default function CreatePostPage() {
 
   return (
     <div className="min-h-screen bg-zinc-50 flex flex-col md:items-center md:justify-center md:p-4 pt-14 pb-14 md:pt-4 md:pb-4">
-      <MobileHeader />
       <motion.div
         initial={{ opacity: 0, scale: 0.97, y: 10 }}
         animate={{ opacity: 1, scale: 1, y: 0 }}
@@ -253,7 +252,7 @@ export default function CreatePostPage() {
         {/* Header */}
         <div className="flex justify-between items-center px-5 py-4 border-b border-zinc-100 shrink-0 bg-white z-10">
           {step === "select" && (
-            <button onClick={() => navigate("/dashboard")} className="text-zinc-600 hover:text-zinc-900 text-sm font-semibold flex items-center gap-2">
+            <button onClick={() => navigate(profilePath)} className="text-zinc-600 hover:text-zinc-900 text-sm font-semibold flex items-center gap-2">
               <ArrowLeft className="w-4 h-4" /> Cancel
             </button>
           )}
@@ -600,7 +599,7 @@ export default function CreatePostPage() {
                 initial={{ opacity: 0, y: 8 }}
                 animate={{ opacity: 1, y: 0 }}
                 transition={{ delay: 0.5 }}
-                onClick={() => navigate("/dashboard", { replace: true })}
+                onClick={() => navigate(profilePath, { replace: true })}
                 className="px-8 h-12 bg-rose-500 hover:bg-rose-600 text-white font-bold rounded-xl transition-all hover:scale-[1.02] active:scale-[0.98] shadow-lg shadow-rose-500/20 text-sm"
               >
                 Go to profile
@@ -609,7 +608,6 @@ export default function CreatePostPage() {
           )}
         </div>
       </motion.div>
-      <MobileNavbar />
     </div>
   );
 }

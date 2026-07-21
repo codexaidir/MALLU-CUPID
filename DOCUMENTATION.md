@@ -105,3 +105,17 @@ The application uses URL-based pagination (React Router) with the following rout
 - `AUTH_CORS_ORIGIN` secret now includes localhost:3000/3001 for local development alongside mallucupid.com.
 - End-to-end tested: API (signed upload -> PUT -> create -> profile) and browser (photo crop/post, video post, validations, mobile + desktop UI). Test posts and media were removed afterwards.
 
+## Username URLs, mobile chrome, wallet & help
+
+- Logged-in URLs are username-based: profile at `/<username>`, sub-pages at `/<username>/<page>` (edit-profile, create-post, verification, wallet, help, notifications, inbox). Legacy paths (`/dashboard`, `/edit-profile`, `/create-post`, `/verification`) redirect using the session's `user_metadata.username`.
+- `CreatorLayout` wraps all `/:username` routes: requires a session, verifies the URL username against the DB profile (redirects to the canonical one, preserving sub-path), and renders the fixed mobile header + navbar on every logged-in page.
+- Edge function `POST /profile` now syncs a changed username into auth `user_metadata` (admin API) so URL building stays correct.
+- Mobile header (fixed top): logo only on the left (no "Creator Hub" text), messenger icon on the right -> `/<username>/inbox`.
+- Mobile navbar (fixed bottom), left to right: Profile, Notifications, + New post (Photo/Video drop box), Wallet, Help.
+- Dashboard: settings icon next to the username removed (Edit profile button remains); gap between header and profile section tightened; desktop sidebar links now go to Inbox, Wallet, Verification, and a new Help entry.
+- Migration `006`: `payout_accounts` (bank details, RLS read-own) and `support_tickets` (subject 3-120, message 10-1000, status open/in_progress/resolved, admin_reply, RLS read-own).
+- New endpoints (cookie auth): `GET/POST /payout-account` (validates account holder, 9-18 digit account number, IFSC `AAAA0XXXXXX`, optional UPI) and `GET/POST /support-tickets`.
+- Wallet page: balance ₹0 (no transactions system yet), content sales/lifetime earnings stats, bank details form persisted to DB (masked display + edit), withdraw disabled below ₹100 minimum, sales empty state.
+- Help page: create support tokens to contact admin, list with status badges and admin reply display.
+- Notifications and Inbox pages have clean empty states pending those systems.
+

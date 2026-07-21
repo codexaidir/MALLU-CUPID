@@ -772,8 +772,125 @@ const handleProfile = async (req: Request) => {
     return jsonResponse({ error: 'Failed to update profile' }, 500, {}, [], origin)
   }
 
+  // Keep auth user metadata in sync so the frontend can build /<username> URLs from the session
+  if (username && username !== user.user_metadata?.username) {
+    await fetch(`${SUPABASE_URL}/auth/v1/admin/users/${user.id}`, {
+      method: 'PUT',
+      headers: { ...authHeaders(true) },
+      body: JSON.stringify({ user_metadata: { ...(user.user_metadata || {}), username } }),
+    }).catch((err) => console.error('Failed to sync username metadata:', err))
+  }
+
   const rows = await res.json().catch(() => [])
   return jsonResponse({ profile: Array.isArray(rows) ? rows[0] : rows }, 200, {}, [], origin)
+}
+
+const handleGetPayoutAccount = async (req: Request) => {
+  const origin = req.headers.get('origin')
+  const user = await requireUser(req)
+  if (!user) return jsonResponse({ error: 'Unauthorized' }, 401, {}, [], origin)
+
+  const res = await fetch(
+    `${SUPABASE_URL}/rest/v1/payout_accounts?user_id=eq.${user.id}&select=account_holder,account_number,ifsc,upi_id,updated_at&limit=1`,
+    { headers: { ...authHeaders(true) } },
+  )
+  if (!res.ok) return jsonResponse({ error: 'Failed to load payout account' }, 500, {}, [], origin)
+  const rows = await res.json().catch(() => [])
+  return jsonResponse({ account: Array.isArray(rows) && rows.length ? rows[0] : null }, 200, {}, [], origin)
+}
+
+const handleSavePayoutAccount = async (req: Request) => {
+  const origin = req.headers.get('origin')
+  const user = await requireUser(req)
+  if (!user) return jsonResponse({ error: 'Unauthorized' }, 401, {}, [], origin)
+
+  const body = await parseJson(req)
+  const accountHolder = typeof body.account_holder === 'string' ? body.account_holder.trim() : ''
+  const accountNumber = typeof body.account_number === 'string' ? body.account_number.trim() : ''
+  const ifsc = typeof body.ifsc === 'string' ? body.ifsc.trim().toUpperCase() : ''
+  const upiId = typeof body.upi_id === 'string' ? body.upi_id.trim() : ''
+
+  if (accountHolder.length < 2 || accountHolder.length > 100) {
+    return jsonResponse({ error: 'Account holder name must be 2-100 characters' }, 400, {}, [], origin)
+  }
+  if (!/^\d{9,18}$/.test(accountNumber)) {
+    return jsonResponse({ error: 'Account number must be 9-18 digits' }, 400, {}, [], origin)
+  }
+  if (!/^[A-Z]{4}0[A-Z0-9]{6}$/.test(ifsc)) {
+    return jsonResponse({ error: 'Enter a valid IFSC code (e.g. SBIN0001234)' }, 400, {}, [], origin)
+  }
+  if (upiId && !/^[\w.\-]{2,}@[A-Za-z]{2,}$/.test(upiId)) {
+    return jsonResponse({ error: 'Enter a valid UPI ID (e.g. name@bank)' }, 400, {}, [], origin)
+  }
+
+  const res = await fetch(`${SUPABASE_URL}/rest/v1/payout_accounts?on_conflict=user_id`, {
+    method: 'POST',
+    headers: {
+      ...authHeaders(true),
+      Prefer: 'resolution=merge-duplicates,return=representation',
+    },
+    body: JSON.stringify([{
+      user_id: user.id,
+      account_holder: accountHolder,
+      account_number: accountNumber,
+      ifsc,
+      upi_id: upiId,
+      updated_at: new Date().toISOString(),
+    }]),
+  })
+
+  if (!res.ok) {
+    console.error('Payout account save failed:', await res.text().catch(() => ''))
+    return jsonResponse({ error: 'Failed to save bank details' }, 500, {}, [], origin)
+  }
+  const rows = await res.json().catch(() => [])
+  return jsonResponse({ account: Array.isArray(rows) ? rows[0] : rows }, 200, {}, [], origin)
+}
+
+const handleGetSupportTickets = async (req: Request) => {
+  const origin = req.headers.get('origin')
+  const user = await requireUser(req)
+  if (!user) return jsonResponse({ error: 'Unauthorized' }, 401, {}, [], origin)
+
+  const res = await fetch(
+    `${SUPABASE_URL}/rest/v1/support_tickets?user_id=eq.${user.id}&select=id,subject,message,status,admin_reply,created_at&order=created_at.desc&limit=50`,
+    { headers: { ...authHeaders(true) } },
+  )
+  if (!res.ok) return jsonResponse({ error: 'Failed to load support tokens' }, 500, {}, [], origin)
+  const rows = await res.json().catch(() => [])
+  return jsonResponse({ tickets: Array.isArray(rows) ? rows : [] }, 200, {}, [], origin)
+}
+
+const handleCreateSupportTicket = async (req: Request) => {
+  const origin = req.headers.get('origin')
+  const user = await requireUser(req)
+  if (!user) return jsonResponse({ error: 'Unauthorized' }, 401, {}, [], origin)
+
+  const body = await parseJson(req)
+  const subject = typeof body.subject === 'string' ? body.subject.trim() : ''
+  const message = typeof body.message === 'string' ? body.message.trim() : ''
+  if (subject.length < 3 || subject.length > 120) {
+    return jsonResponse({ error: 'Subject must be 3-120 characters' }, 400, {}, [], origin)
+  }
+  if (message.length < 10 || message.length > 1000) {
+    return jsonResponse({ error: 'Message must be 10-1000 characters' }, 400, {}, [], origin)
+  }
+
+  const res = await fetch(`${SUPABASE_URL}/rest/v1/support_tickets`, {
+    method: 'POST',
+    headers: {
+      ...authHeaders(true),
+      Prefer: 'return=representation',
+    },
+    body: JSON.stringify([{ user_id: user.id, subject, message }]),
+  })
+
+  if (!res.ok) {
+    console.error('Support ticket create failed:', await res.text().catch(() => ''))
+    return jsonResponse({ error: 'Failed to create support token' }, 500, {}, [], origin)
+  }
+  const rows = await res.json().catch(() => [])
+  return jsonResponse({ ticket: Array.isArray(rows) ? rows[0] : rows }, 200, {}, [], origin)
 }
 
 const handleForgot = async (req: Request) => {
@@ -845,6 +962,10 @@ serve(async (req) => {
   if (isRoute('profile') && req.method === 'POST') return handleProfile(req)
   if (isRoute('post-upload-urls') && req.method === 'POST') return handlePostUploadUrls(req)
   if (isRoute('posts') && req.method === 'POST') return handleCreatePost(req)
+  if (isRoute('payout-account') && req.method === 'GET') return handleGetPayoutAccount(req)
+  if (isRoute('payout-account') && req.method === 'POST') return handleSavePayoutAccount(req)
+  if (isRoute('support-tickets') && req.method === 'GET') return handleGetSupportTickets(req)
+  if (isRoute('support-tickets') && req.method === 'POST') return handleCreateSupportTicket(req)
 
   return jsonResponse({ error: 'Not Found' }, 404, {}, [], req.headers.get('origin'))
 })

@@ -1,12 +1,13 @@
 import React from "react";
-import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
+import { BrowserRouter, Routes, Route, Navigate, useLocation } from "react-router-dom";
 import { Header } from "./components/Header";
 import { Hero } from "./components/Hero";
 import { HowItWorks } from "./components/HowItWorks";
 import { CommunityCTA } from "./components/CommunityCTA";
 import { Footer } from "./components/Footer";
 
-import { AuthProvider, ProtectedRoute, useAuth } from "./lib/useAuth";
+import { AuthProvider, useAuth } from "./lib/useAuth";
+import CreatorLayout from "./components/CreatorLayout";
 
 import LoginPage from "./pages/LoginPage";
 import SignupPage from "./pages/SignupPage";
@@ -17,6 +18,10 @@ import VerificationPage from "./pages/VerificationPage";
 import EditProfilePage from "./pages/EditProfilePage";
 import CreatorOnboardingPage from "./pages/CreatorOnboardingPage";
 import CreatePostPage from "./pages/CreatePostPage";
+import WalletPage from "./pages/WalletPage";
+import HelpPage from "./pages/HelpPage";
+import NotificationsPage from "./pages/NotificationsPage";
+import InboxPage from "./pages/InboxPage";
 import TermsPage from "./pages/TermsPage";
 import PrivacyPolicyPage from "./pages/PrivacyPolicyPage";
 import RefundPolicyPage from "./pages/RefundPolicyPage";
@@ -47,6 +52,29 @@ function AuthLayout({ children }: { children: React.ReactNode }) {
   );
 }
 
+/** Redirects legacy paths like /dashboard to the username-based URL /<username>/<page>. */
+function LegacyRedirect({ page = "" }: { page?: string }) {
+  const { user, loading } = useAuth();
+  const location = useLocation();
+
+  if (loading) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-zinc-50">
+        <div className="rounded-3xl bg-white p-8 shadow-lg border border-zinc-200 text-center">
+          <p className="text-zinc-700 font-medium">Loading your session…</p>
+        </div>
+      </div>
+    );
+  }
+
+  if (!user) return <Navigate to="/login" replace />;
+
+  const username = user.user_metadata?.username;
+  if (!username) return <Navigate to="/login" replace />;
+
+  return <Navigate to={`/${username}${page ? `/${page}` : ""}${location.search}`} replace />;
+}
+
 export default function App() {
   return (
     <BrowserRouter>
@@ -54,7 +82,7 @@ export default function App() {
         <div className="min-h-screen bg-white font-sans text-zinc-900 antialiased selection:bg-rose-500/30">
           <Routes>
             <Route path="/" element={<LandingPage />} />
-            
+
             <Route path="/login" element={<AuthLayout><LoginPage /></AuthLayout>} />
             <Route path="/signup" element={<AuthLayout><SignupPage /></AuthLayout>} />
             <Route path="/verify-otp" element={<AuthLayout><VerifyOtpPage /></AuthLayout>} />
@@ -64,11 +92,25 @@ export default function App() {
             <Route path="/privacy-policy" element={<AuthLayout><PrivacyPolicyPage /></AuthLayout>} />
             <Route path="/refund-policy" element={<AuthLayout><RefundPolicyPage /></AuthLayout>} />
             <Route path="/contact-us" element={<AuthLayout><ContactUsPage /></AuthLayout>} />
-            
-            <Route path="/dashboard" element={<ProtectedRoute><DashboardPage /></ProtectedRoute>} />
-            <Route path="/edit-profile" element={<ProtectedRoute><EditProfilePage /></ProtectedRoute>} />
-            <Route path="/create-post" element={<ProtectedRoute><CreatePostPage /></ProtectedRoute>} />
-            <Route path="/verification" element={<ProtectedRoute><VerificationPage /></ProtectedRoute>} />
+
+            {/* Legacy paths redirect to /<username>/... */}
+            <Route path="/dashboard" element={<LegacyRedirect />} />
+            <Route path="/edit-profile" element={<LegacyRedirect page="edit-profile" />} />
+            <Route path="/create-post" element={<LegacyRedirect page="create-post" />} />
+            <Route path="/verification" element={<LegacyRedirect page="verification" />} />
+
+            {/* Username-based creator routes with persistent mobile header + navbar */}
+            <Route path="/:username" element={<CreatorLayout />}>
+              <Route index element={<DashboardPage />} />
+              <Route path="edit-profile" element={<EditProfilePage />} />
+              <Route path="create-post" element={<CreatePostPage />} />
+              <Route path="verification" element={<VerificationPage />} />
+              <Route path="wallet" element={<WalletPage />} />
+              <Route path="help" element={<HelpPage />} />
+              <Route path="notifications" element={<NotificationsPage />} />
+              <Route path="inbox" element={<InboxPage />} />
+            </Route>
+
             <Route path="*" element={<Navigate to="/" replace />} />
           </Routes>
         </div>

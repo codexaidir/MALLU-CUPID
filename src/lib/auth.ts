@@ -87,6 +87,47 @@ export interface CreatorPost {
   created_at: string;
 }
 
+export interface PayoutAccount {
+  account_holder: string;
+  account_number: string;
+  ifsc: string;
+  upi_id: string;
+  updated_at: string;
+}
+
+export async function getPayoutAccount(): Promise<{ account?: PayoutAccount | null; error?: string }> {
+  return apiGet('/payout-account');
+}
+
+export async function savePayoutAccount(data: {
+  account_holder: string;
+  account_number: string;
+  ifsc: string;
+  upi_id: string;
+}): Promise<{ account?: PayoutAccount; error?: string }> {
+  return apiPost('/payout-account', data);
+}
+
+export interface SupportTicket {
+  id: string;
+  subject: string;
+  message: string;
+  status: 'open' | 'in_progress' | 'resolved';
+  admin_reply: string;
+  created_at: string;
+}
+
+export async function getSupportTickets(): Promise<{ tickets?: SupportTicket[]; error?: string }> {
+  return apiGet('/support-tickets');
+}
+
+export async function createSupportTicket(
+  subject: string,
+  message: string,
+): Promise<{ ticket?: SupportTicket; error?: string }> {
+  return apiPost('/support-tickets', { subject, message });
+}
+
 export interface PostUpload {
   path: string;
   upload_url: string;

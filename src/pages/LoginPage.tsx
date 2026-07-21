@@ -3,8 +3,10 @@ import { motion, AnimatePresence } from "motion/react";
 import { Eye, EyeOff, Mail, Lock, ArrowRight, Loader2, AlertCircle, CheckCircle2 } from "lucide-react";
 import { Link, useNavigate } from "react-router-dom";
 import { login } from "../lib/auth";
+import { useAuth } from "../lib/useAuth";
 
 export default function LoginPage() {
+  const { refreshSession } = useAuth();
   const [showPassword, setShowPassword] = useState(false);
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -37,7 +39,9 @@ export default function LoginPage() {
         return;
       }
       setSuccess('Login successful! Redirecting...');
-      navigate('/dashboard', { replace: true });
+      await refreshSession();
+      const username = response?.user?.user_metadata?.username;
+      navigate(username ? `/${username}` : '/dashboard', { replace: true });
     })();
   };
 

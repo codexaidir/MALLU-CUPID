@@ -1,24 +1,26 @@
 import React, { useState } from 'react';
-import { useNavigate, useLocation } from 'react-router-dom';
-import { LayoutDashboard, Bell, Plus, Wallet, Grid, ImagePlus, Video } from 'lucide-react';
+import { useNavigate, useLocation, useParams } from 'react-router-dom';
+import { Bell, Plus, Wallet, ImagePlus, Video, User, HelpCircle } from 'lucide-react';
 import { AnimatePresence, motion } from 'motion/react';
 
 export function MobileNavbar() {
   const navigate = useNavigate();
   const location = useLocation();
+  const { username } = useParams<{ username: string }>();
+  const base = username ? `/${username}` : '/dashboard';
   const [isPostMenuOpen, setIsPostMenuOpen] = useState(false);
 
   const navItems = [
-    { icon: Grid, label: 'Feed', path: '/dashboard' },
-    { icon: Bell, label: 'Alerts', path: '/notifications', onClick: () => alert('Notifications coming soon') },
-    { icon: Plus, label: 'Post', path: '/create-post', isPrimary: true },
-    { icon: Wallet, label: 'Wallet', path: '/wallet', onClick: () => alert('Wallet coming soon') },
-    { icon: LayoutDashboard, label: 'Profile', path: '/dashboard' },
+    { icon: User, label: 'Profile', path: base },
+    { icon: Bell, label: 'Notifications', path: `${base}/notifications` },
+    { icon: Plus, label: 'New post', isPrimary: true },
+    { icon: Wallet, label: 'Wallet', path: `${base}/wallet` },
+    { icon: HelpCircle, label: 'Help', path: `${base}/help` },
   ];
 
   const goToCreatePost = (type: 'photo' | 'video') => {
     setIsPostMenuOpen(false);
-    navigate(`/create-post?type=${type}`);
+    navigate(`${base}/create-post?type=${type}`);
   };
 
   return (
@@ -65,16 +67,17 @@ export function MobileNavbar() {
         )}
       </AnimatePresence>
 
-      <div className="md:hidden fixed bottom-0 left-0 right-0 h-14 bg-white border-t border-zinc-200 z-[100] flex items-center justify-around px-2 shadow-[0_-4px_20px_-10px_rgba(0,0,0,0.1)]">
+      <nav className="md:hidden fixed bottom-0 left-0 right-0 h-14 bg-white border-t border-zinc-200 z-[100] flex items-center justify-around px-2 shadow-[0_-4px_20px_-10px_rgba(0,0,0,0.1)]">
         {navItems.map((item, index) => {
           const Icon = item.icon;
-          const isActive = location.pathname === item.path;
+          const isActive = item.path ? location.pathname === item.path : false;
 
           if (item.isPrimary) {
             return (
               <button
                 key={index}
                 onClick={() => setIsPostMenuOpen((open) => !open)}
+                aria-label="New post"
                 className={`relative -top-5 w-12 h-12 bg-rose-500 text-white rounded-full flex items-center justify-center shadow-lg shadow-rose-500/30 active:scale-95 transition-transform z-[102] ${isPostMenuOpen ? 'rotate-45' : ''}`}
                 style={{ transition: 'transform 0.2s' }}
               >
@@ -86,13 +89,8 @@ export function MobileNavbar() {
           return (
             <button
               key={index}
-              onClick={() => {
-                if (item.onClick) {
-                  item.onClick();
-                } else {
-                  navigate(item.path);
-                }
-              }}
+              onClick={() => item.path && navigate(item.path)}
+              aria-label={item.label}
               className={`flex flex-col items-center justify-center w-12 h-full transition-colors ${
                 isActive ? 'text-zinc-900' : 'text-zinc-400 hover:text-zinc-600'
               }`}
@@ -101,7 +99,7 @@ export function MobileNavbar() {
             </button>
           );
         })}
-      </div>
+      </nav>
     </>
   );
 }

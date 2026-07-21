@@ -1,12 +1,12 @@
 import React, { useState, useEffect } from "react";
 import { motion, AnimatePresence } from "motion/react";
-import { Link, useNavigate } from "react-router-dom";
-import { LogOut, LayoutDashboard, Users, CreditCard, Heart, Grid, PlaySquare, Play, Menu, X, Bell, ShieldCheck, BadgeCheck, Wallet, MoreVertical, Edit2, Trash2, Plus, Copy, Check, Inbox, Settings, Link2, ImagePlus, Radio, TrendingUp, Sparkles, UploadCloud, FileImage, FileVideo, Eye, LockKeyhole, Video, Layers } from "lucide-react";
-import { MobileHeader } from "../components/MobileHeader";
-import { MobileNavbar } from "../components/MobileNavbar";
+import { Link, useNavigate, useParams } from "react-router-dom";
+import { LogOut, LayoutDashboard, Users, CreditCard, Heart, Grid, PlaySquare, Play, Menu, X, Bell, ShieldCheck, BadgeCheck, Wallet, MoreVertical, Edit2, Trash2, Plus, Copy, Check, Inbox, Link2, ImagePlus, Radio, TrendingUp, Sparkles, UploadCloud, FileImage, FileVideo, Eye, LockKeyhole, Video, Layers, HelpCircle } from "lucide-react";
 import { getProfile, logout, type CreatorPost, type Profile, type ProfileStats } from "../lib/auth";
 
 export default function DashboardPage() {
+  const { username: routeUsername } = useParams<{ username: string }>();
+  const base = `/${routeUsername}`;
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
   const [isSignOutModalOpen, setIsSignOutModalOpen] = useState(false);
   const [isShareModalOpen, setIsShareModalOpen] = useState(false);
@@ -56,17 +56,17 @@ export default function DashboardPage() {
         {isExpanded && <span className="font-display font-bold text-lg text-zinc-900">Creator Hub</span>}
       </div>
       <div className={`flex-grow flex flex-col space-y-4 w-full ${isExpanded ? 'items-stretch' : 'items-center'}`}>
-        <a href="#" className={`p-3 bg-zinc-100 text-zinc-900 rounded-xl transition-colors group relative ${isExpanded ? 'flex items-center gap-3' : ''}`}>
+        <Link to={base} className={`p-3 bg-zinc-100 text-zinc-900 rounded-xl transition-colors group relative ${isExpanded ? 'flex items-center gap-3' : ''}`}>
           <LayoutDashboard className="w-6 h-6 shrink-0" />
           {isExpanded ? <span className="font-semibold">Dashboard</span> : <span className="absolute left-full ml-4 px-2 py-1 bg-zinc-800 text-white text-xs rounded opacity-0 group-hover:opacity-100 pointer-events-none whitespace-nowrap z-50">Dashboard</span>}
-        </a>
-        <a href="#" className={`p-3 text-zinc-500 hover:bg-zinc-50 hover:text-zinc-900 rounded-xl transition-colors group relative ${isExpanded ? 'flex items-center gap-3' : ''}`}>
+        </Link>
+        <Link to={`${base}/inbox`} className={`p-3 text-zinc-500 hover:bg-zinc-50 hover:text-zinc-900 rounded-xl transition-colors group relative ${isExpanded ? 'flex items-center gap-3' : ''}`}>
           <div className="relative shrink-0">
             <Inbox className="w-6 h-6" />
             <span className="absolute -top-1 -right-1 w-3 h-3 bg-rose-500 rounded-full border-2 border-white"></span>
           </div>
           {isExpanded ? <span className="font-semibold">Inbox</span> : <span className="absolute left-full ml-4 px-2 py-1 bg-zinc-800 text-white text-xs rounded opacity-0 group-hover:opacity-100 pointer-events-none whitespace-nowrap z-50">Inbox</span>}
-        </a>
+        </Link>
         <button 
           onClick={() => setIsNotificationsOpen(true)}
           className={`p-3 text-zinc-500 hover:bg-zinc-50 hover:text-zinc-900 rounded-xl transition-colors group relative ${isExpanded ? 'flex items-center gap-3 w-full text-left' : ''}`}
@@ -74,13 +74,17 @@ export default function DashboardPage() {
           <Bell className="w-6 h-6 shrink-0" />
           {isExpanded ? <span className="font-semibold">Notifications</span> : <span className="absolute left-full ml-4 px-2 py-1 bg-zinc-800 text-white text-xs rounded opacity-0 group-hover:opacity-100 pointer-events-none whitespace-nowrap z-50">Notifications</span>}
         </button>
-        <a href="#" className={`p-3 text-zinc-500 hover:bg-zinc-50 hover:text-zinc-900 rounded-xl transition-colors group relative ${isExpanded ? 'flex items-center gap-3' : ''}`}>
+        <Link to={`${base}/wallet`} className={`p-3 text-zinc-500 hover:bg-zinc-50 hover:text-zinc-900 rounded-xl transition-colors group relative ${isExpanded ? 'flex items-center gap-3' : ''}`}>
           <Wallet className="w-6 h-6 shrink-0" />
           {isExpanded ? <span className="font-semibold">Wallet</span> : <span className="absolute left-full ml-4 px-2 py-1 bg-zinc-800 text-white text-xs rounded opacity-0 group-hover:opacity-100 pointer-events-none whitespace-nowrap z-50">Wallet</span>}
-        </a>
-        <Link to="/verification" className={`p-3 text-zinc-500 hover:bg-zinc-50 hover:text-zinc-900 rounded-xl transition-colors group relative ${isExpanded ? 'flex items-center gap-3' : ''}`}>
+        </Link>
+        <Link to={`${base}/verification`} className={`p-3 text-zinc-500 hover:bg-zinc-50 hover:text-zinc-900 rounded-xl transition-colors group relative ${isExpanded ? 'flex items-center gap-3' : ''}`}>
           <ShieldCheck className="w-6 h-6 shrink-0" />
           {isExpanded ? <span className="font-semibold">Verification</span> : <span className="absolute left-full ml-4 px-2 py-1 bg-zinc-800 text-white text-xs rounded opacity-0 group-hover:opacity-100 pointer-events-none whitespace-nowrap z-50">Verification</span>}
+        </Link>
+        <Link to={`${base}/help`} className={`p-3 text-zinc-500 hover:bg-zinc-50 hover:text-zinc-900 rounded-xl transition-colors group relative ${isExpanded ? 'flex items-center gap-3' : ''}`}>
+          <HelpCircle className="w-6 h-6 shrink-0" />
+          {isExpanded ? <span className="font-semibold">Help</span> : <span className="absolute left-full ml-4 px-2 py-1 bg-zinc-800 text-white text-xs rounded opacity-0 group-hover:opacity-100 pointer-events-none whitespace-nowrap z-50">Help</span>}
         </Link>
       </div>
       <div className={`mt-auto pb-4 w-full ${isExpanded ? 'flex flex-col items-stretch' : 'flex flex-col items-center'}`}>
@@ -97,7 +101,6 @@ export default function DashboardPage() {
 
   return (
     <div className="min-h-screen bg-zinc-50 flex">
-      <MobileHeader />
       {/* Desktop Sidebar */}
       <aside className="hidden md:block w-20 fixed inset-y-0 left-0 z-50">
         <SidebarContent />
@@ -135,7 +138,7 @@ export default function DashboardPage() {
 
       {/* Main Content */}
       <div className="flex-1 md:ml-20 flex flex-col min-h-screen pt-14 pb-14 md:pt-0 md:pb-0">
-        <main className="flex-grow container mx-auto px-4 sm:px-8 py-8 max-w-4xl">
+        <main className="flex-grow container mx-auto px-4 sm:px-8 pt-0 pb-8 md:py-8 max-w-4xl">
           {isLoading ? (
             // Skeleton Loading State
             <div className="animate-pulse">
@@ -172,9 +175,9 @@ export default function DashboardPage() {
               <motion.div 
                 initial={{ opacity: 0, y: 20 }}
                 animate={{ opacity: 1, y: 0 }}
-                className="mb-8 px-4 sm:px-0 max-w-[600px] mx-auto w-full pt-4"
+                className="mb-6 md:mb-8 px-1 sm:px-0 max-w-[600px] mx-auto w-full pt-4 md:pt-4"
               >
-                <div className="flex items-center gap-6 sm:gap-12 mb-6">
+                <div className="flex items-center gap-6 sm:gap-12 mb-5">
                   {/* Profile Image */}
                   <div className="w-24 h-24 sm:w-36 sm:h-36 rounded-full overflow-hidden flex-shrink-0 relative border border-zinc-200">
                     {profile?.avatar_url ? (
@@ -193,7 +196,6 @@ export default function DashboardPage() {
                   <div className="flex flex-col flex-grow">
                     <div className="flex items-center gap-3 mb-4">
                       <h2 className="text-xl sm:text-2xl font-bold text-zinc-900">{profile?.username || ''}</h2>
-                      <Settings className="w-5 h-5 sm:w-6 sm:h-6 text-zinc-900 cursor-pointer hover:opacity-70" onClick={() => navigate('/edit-profile')} />
                     </div>
 
                     {/* Stats Desktop */}
@@ -221,7 +223,7 @@ export default function DashboardPage() {
                 {/* Action Buttons */}
                 <div className="flex gap-2 w-full">
                   <button 
-                    onClick={() => navigate('/edit-profile')}
+                    onClick={() => navigate(`${base}/edit-profile`)}
                     className="flex-1 py-1.5 px-4 bg-zinc-200 hover:bg-zinc-300 text-zinc-900 font-semibold rounded-lg text-sm transition-colors text-center"
                   >
                     Edit profile
@@ -253,7 +255,7 @@ export default function DashboardPage() {
                             className="absolute right-0 top-full mt-2 w-48 bg-white rounded-2xl shadow-2xl border border-zinc-100 overflow-hidden z-50"
                           >
                             <button
-                              onClick={() => { setIsNewPostMenuOpen(false); navigate('/create-post?type=photo'); }}
+                              onClick={() => { setIsNewPostMenuOpen(false); navigate(`${base}/create-post?type=photo`); }}
                               className="w-full flex items-center gap-3 px-4 py-3.5 text-zinc-900 hover:bg-rose-50 transition-colors text-left"
                             >
                               <span className="w-8 h-8 rounded-lg bg-rose-50 text-rose-500 flex items-center justify-center shrink-0">
@@ -263,7 +265,7 @@ export default function DashboardPage() {
                             </button>
                             <div className="h-px bg-zinc-100" />
                             <button
-                              onClick={() => { setIsNewPostMenuOpen(false); navigate('/create-post?type=video'); }}
+                              onClick={() => { setIsNewPostMenuOpen(false); navigate(`${base}/create-post?type=video`); }}
                               className="w-full flex items-center gap-3 px-4 py-3.5 text-zinc-900 hover:bg-rose-50 transition-colors text-left"
                             >
                               <span className="w-8 h-8 rounded-lg bg-rose-50 text-rose-500 flex items-center justify-center shrink-0">
@@ -476,7 +478,6 @@ export default function DashboardPage() {
           </div>
         )}
       </AnimatePresence>
-      <MobileNavbar />
     </div>
   );
 }
