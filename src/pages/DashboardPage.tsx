@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from "react";
 import { motion, AnimatePresence } from "motion/react";
 import { Link, useNavigate } from "react-router-dom";
-import { LogOut, LayoutDashboard, Users, CreditCard, Heart, Grid, PlaySquare, Play, Menu, X, Bell, ShieldCheck, BadgeCheck, Wallet, MoreVertical, Edit2, Trash2, Plus, Copy, Check, Inbox, Settings, Link2, ImagePlus, Radio, TrendingUp, Sparkles, UploadCloud, FileImage, FileVideo, Eye, LockKeyhole } from "lucide-react";
+import { LogOut, LayoutDashboard, Users, CreditCard, Heart, Grid, PlaySquare, Play, Menu, X, Bell, ShieldCheck, BadgeCheck, Wallet, MoreVertical, Edit2, Trash2, Plus, Copy, Check, Inbox, Settings, Link2, ImagePlus, Radio, TrendingUp, Sparkles, UploadCloud, FileImage, FileVideo, Eye, LockKeyhole, Video, Layers } from "lucide-react";
 import { MobileHeader } from "../components/MobileHeader";
 import { MobileNavbar } from "../components/MobileNavbar";
 import { getProfile, logout, type CreatorPost, type Profile, type ProfileStats } from "../lib/auth";
@@ -15,6 +15,7 @@ export default function DashboardPage() {
   const [copied, setCopied] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
   const [isNotificationsOpen, setIsNotificationsOpen] = useState(false);
+  const [isNewPostMenuOpen, setIsNewPostMenuOpen] = useState(false);
   const [activeTab, setActiveTab] = useState<'grid' | 'video'>('grid');
   const navigate = useNavigate();
 
@@ -231,6 +232,50 @@ export default function DashboardPage() {
                   >
                     Share profile
                   </button>
+                  {/* New post (desktop) */}
+                  <div className="relative hidden md:block">
+                    <button
+                      onClick={() => setIsNewPostMenuOpen((open) => !open)}
+                      className="py-1.5 px-4 bg-rose-500 hover:bg-rose-600 text-white font-semibold rounded-lg text-sm transition-colors flex items-center gap-1.5 shadow-md shadow-rose-500/20"
+                    >
+                      <Plus className={`w-4 h-4 transition-transform ${isNewPostMenuOpen ? 'rotate-45' : ''}`} />
+                      New post
+                    </button>
+                    <AnimatePresence>
+                      {isNewPostMenuOpen && (
+                        <>
+                          <div className="fixed inset-0 z-40" onClick={() => setIsNewPostMenuOpen(false)} />
+                          <motion.div
+                            initial={{ opacity: 0, y: -8, scale: 0.95 }}
+                            animate={{ opacity: 1, y: 0, scale: 1 }}
+                            exit={{ opacity: 0, y: -8, scale: 0.95 }}
+                            transition={{ type: 'spring', damping: 22, stiffness: 300 }}
+                            className="absolute right-0 top-full mt-2 w-48 bg-white rounded-2xl shadow-2xl border border-zinc-100 overflow-hidden z-50"
+                          >
+                            <button
+                              onClick={() => { setIsNewPostMenuOpen(false); navigate('/create-post?type=photo'); }}
+                              className="w-full flex items-center gap-3 px-4 py-3.5 text-zinc-900 hover:bg-rose-50 transition-colors text-left"
+                            >
+                              <span className="w-8 h-8 rounded-lg bg-rose-50 text-rose-500 flex items-center justify-center shrink-0">
+                                <ImagePlus className="w-4 h-4" />
+                              </span>
+                              <span className="font-semibold text-sm">Photo</span>
+                            </button>
+                            <div className="h-px bg-zinc-100" />
+                            <button
+                              onClick={() => { setIsNewPostMenuOpen(false); navigate('/create-post?type=video'); }}
+                              className="w-full flex items-center gap-3 px-4 py-3.5 text-zinc-900 hover:bg-rose-50 transition-colors text-left"
+                            >
+                              <span className="w-8 h-8 rounded-lg bg-rose-50 text-rose-500 flex items-center justify-center shrink-0">
+                                <Video className="w-4 h-4" />
+                              </span>
+                              <span className="font-semibold text-sm">Video</span>
+                            </button>
+                          </motion.div>
+                        </>
+                      )}
+                    </AnimatePresence>
+                  </div>
                 </div>
               </motion.div>
 
@@ -259,44 +304,47 @@ export default function DashboardPage() {
               >
                 {filteredPosts.map((post) => (
                   <div key={post.id} className="relative bg-white border border-zinc-200 rounded-xl overflow-hidden shadow-sm flex flex-col group">
-                    <div className={`relative ${post.media_type === 'video' ? 'aspect-[9/16]' : 'aspect-[4/5]'} bg-zinc-200 overflow-hidden shrink-0`}>
+                    <div className={`relative ${post.media_type === 'video' ? 'aspect-[9/16]' : 'aspect-[4/5]'} bg-black overflow-hidden shrink-0`}>
                       {post.media_type === 'video' ? (
-                        <video src={post.media_url} className={`w-full h-full object-cover ${post.is_paid ? 'blur-[12px] scale-110' : ''}`} controls={!post.is_paid} />
+                        <video src={post.media_url} className={`w-full h-full object-contain bg-black ${post.is_paid ? 'blur-[40px] scale-110' : ''}`} controls={!post.is_paid} playsInline />
                       ) : (
-                        <img src={post.media_url} alt={`Post ${post.id}`} className={`w-full h-full object-cover transition-transform duration-500 ${post.is_paid ? 'blur-[12px] scale-110' : 'group-hover:scale-105'}`} />
+                        <img src={post.media_url} alt={`Post ${post.id}`} className={`w-full h-full object-cover transition-transform duration-500 ${post.is_paid ? 'blur-[40px] scale-110' : 'group-hover:scale-105'}`} />
                       )}
-                      
+
                       {post.media_type === 'video' && !post.is_paid && (
                         <div className="absolute top-2 left-2 p-1 bg-black/40 backdrop-blur-md rounded-full text-white">
                           <Play className="w-4 h-4 fill-white" />
                         </div>
                       )}
 
+                      {post.media_type === 'image' && post.media_count > 1 && !post.is_paid && (
+                        <div className="absolute top-2 right-2 px-2 py-1 bg-black/40 backdrop-blur-md rounded-full text-white flex items-center gap-1 text-[10px] font-bold">
+                          <Layers className="w-3.5 h-3.5" /> {post.media_count}
+                        </div>
+                      )}
+
+                      {/* Paid: 95% blur + unlock */}
                       {post.is_paid && (
-                        <div className="absolute inset-0 bg-black/20 flex flex-col items-center justify-center pointer-events-none z-10">
-                          <div className="bg-white/90 backdrop-blur-sm p-3 rounded-full mb-2 shadow-lg">
+                        <div className="absolute inset-0 bg-black/30 flex flex-col items-center justify-center z-10 p-4 text-center">
+                          <div className="bg-white p-3.5 rounded-full mb-3 shadow-lg">
                             <LockKeyhole className="w-6 h-6 text-zinc-900" />
                           </div>
-                          <span className="text-white font-bold drop-shadow-md bg-black/40 px-3 py-1 rounded-full text-sm">Exclusive Content</span>
+                          <span className="text-white font-bold text-sm sm:text-base drop-shadow-md mb-1">Exclusive Content</span>
+                          <span className="text-white/80 text-xs drop-shadow-md mb-4">Unlock this post to view the content</span>
+                          <button className="px-5 py-2 bg-white hover:bg-zinc-100 text-zinc-900 rounded-full text-xs sm:text-sm font-bold transition-colors shadow-lg">
+                            Unlock for ₹{post.price}
+                          </button>
                         </div>
                       )}
                     </div>
-                    
-                    <div className="p-4 flex flex-col flex-1 bg-white">
-                      <p className="text-zinc-900 text-sm line-clamp-2 mb-4 leading-relaxed font-medium">
-                        {post.caption || 'No caption provided.'}
+
+                    <div className="px-3 py-2.5 bg-white flex items-center justify-between gap-2">
+                      <p className="text-zinc-700 text-xs line-clamp-1 leading-relaxed flex-1">
+                        {post.caption || 'No caption'}
                       </p>
-                      
-                      <div className="mt-auto flex items-center justify-between">
-                        {post.is_paid ? (
-                          <>
-                            <span className="font-bold text-zinc-900 text-lg">₹{post.price}</span>
-                            <button className="px-4 py-2 bg-zinc-900 hover:bg-zinc-800 text-white rounded-lg text-xs font-semibold transition-colors flex items-center gap-2 shrink-0">
-                              Pay & View
-                            </button>
-                          </>
-                        ) : <span className="text-xs text-zinc-500">Free post</span>}
-                      </div>
+                      <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full shrink-0 ${post.is_paid ? 'bg-rose-50 text-rose-500' : 'bg-zinc-100 text-zinc-500'}`}>
+                        {post.is_paid ? `₹${post.price}` : 'Free'}
+                      </span>
                     </div>
                   </div>
                 ))}

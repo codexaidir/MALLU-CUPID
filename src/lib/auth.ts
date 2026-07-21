@@ -76,12 +76,66 @@ export interface ProfileStats {
 
 export interface CreatorPost {
   id: string;
+  public_id: string;
   caption: string;
   media_type: 'image' | 'video';
   media_url: string;
+  media_urls: string[];
+  media_count: number;
   is_paid: boolean;
   price: number;
   created_at: string;
+}
+
+export interface PostUpload {
+  path: string;
+  upload_url: string;
+  content_type: string;
+}
+
+export async function createPostUploadUrls(
+  mediaType: 'image' | 'video',
+  files: { content_type: string; size: number }[],
+): Promise<{ post_public_id?: string; uploads?: PostUpload[]; error?: string }> {
+  return apiPost('/post-upload-urls', { media_type: mediaType, files });
+}
+
+export async function createPost(data: {
+  public_id: string;
+  caption: string;
+  media_type: 'image' | 'video';
+  media_paths: string[];
+  is_paid: boolean;
+  price: number;
+}): Promise<{ status?: string; post?: CreatorPost; error?: string }> {
+  return apiPost('/posts', data);
+}
+
+export function uploadFileWithProgress(
+  uploadUrl: string,
+  file: Blob,
+  contentType: string,
+  onProgress: (loaded: number) => void,
+): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open('PUT', uploadUrl);
+    xhr.setRequestHeader('Content-Type', contentType);
+    xhr.setRequestHeader('x-upsert', 'true');
+    xhr.upload.onprogress = (event) => {
+      if (event.lengthComputable) onProgress(event.loaded);
+    };
+    xhr.onload = () => {
+      if (xhr.status >= 200 && xhr.status < 300) {
+        onProgress(file.size);
+        resolve();
+      } else {
+        reject(new Error(`Upload failed (${xhr.status})`));
+      }
+    };
+    xhr.onerror = () => reject(new Error('Upload failed'));
+    xhr.send(file);
+  });
 }
 
 export async function getProfile(): Promise<{

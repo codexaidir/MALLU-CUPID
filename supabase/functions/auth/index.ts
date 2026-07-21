@@ -444,14 +444,200 @@ const uploadAvatar = async (
   return { ok: true, url }
 }
 
-const handleGetProfile = async (req: Request) => {
-  const origin = req.headers.get('origin')
+const requireUser = async (req: Request) => {
   const cookies = serializeCookies(req.headers.get('cookie') || '')
   const accessToken = cookies['sb-access-token'] ? decodeURIComponent(cookies['sb-access-token']) : ''
-  if (!accessToken) return jsonResponse({ error: 'Unauthorized' }, 401, {}, [], origin)
-
+  if (!accessToken) return null
   const user = await fetchUser(accessToken)
-  if (!user?.id) return jsonResponse({ error: 'Unauthorized' }, 401, {}, [], origin)
+  return user?.id ? user : null
+}
+
+const POST_MEDIA_BUCKET = 'post-media'
+const POST_IMAGE_TYPES = ['image/jpeg', 'image/jpg', 'image/png']
+const MAX_IMAGE_SIZE = 50 * 1024 * 1024
+const MAX_VIDEO_SIZE = 500 * 1024 * 1024
+const MAX_IMAGES_PER_POST = 15
+
+const generatePostPublicId = () => {
+  const alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789'
+  const random = new Uint8Array(12)
+  crypto.getRandomValues(random)
+  return Array.from(random, (byte) => alphabet[byte % alphabet.length]).join('')
+}
+
+const mediaExtension = (contentType: string) => {
+  if (contentType === 'image/png') return 'png'
+  if (contentType === 'image/jpeg' || contentType === 'image/jpg') return 'jpg'
+  const subtype = contentType.split('/')[1] || 'bin'
+  return subtype.split(';')[0].replace(/[^a-z0-9]/gi, '').slice(0, 8) || 'bin'
+}
+
+const signMediaPaths = async (paths: string[]): Promise<Record<string, string>> => {
+  if (!paths.length) return {}
+  const res = await fetch(`${SUPABASE_URL}/storage/v1/object/sign/${POST_MEDIA_BUCKET}`, {
+    method: 'POST',
+    headers: { ...authHeaders(true) },
+    body: JSON.stringify({ expiresIn: 3600, paths }),
+  })
+  if (!res.ok) {
+    console.error('Failed to sign media paths:', await res.text().catch(() => ''))
+    return {}
+  }
+  const rows = await res.json().catch(() => [])
+  const map: Record<string, string> = {}
+  for (const row of Array.isArray(rows) ? rows : []) {
+    if (row?.signedURL && row?.path) map[row.path] = `${SUPABASE_URL}/storage/v1${row.signedURL}`
+  }
+  return map
+}
+
+const decoratePosts = async (posts: Array<Record<string, unknown>>) => {
+  const allPaths = posts.flatMap((post) => (Array.isArray(post.media_paths) ? post.media_paths as string[] : []))
+  const signed = await signMediaPaths(allPaths)
+  return posts.map((post) => {
+    const paths = Array.isArray(post.media_paths) ? post.media_paths as string[] : []
+    const mediaUrls = paths.map((path) => signed[path]).filter(Boolean)
+    return {
+      id: post.id,
+      public_id: post.public_id,
+      caption: post.caption,
+      media_type: post.media_type,
+      media_urls: mediaUrls,
+      media_url: mediaUrls[0] || '',
+      media_count: paths.length,
+      is_paid: post.is_paid,
+      price: post.price,
+      created_at: post.created_at,
+    }
+  })
+}
+
+const handlePostUploadUrls = async (req: Request) => {
+  const origin = req.headers.get('origin')
+  const user = await requireUser(req)
+  if (!user) return jsonResponse({ error: 'Unauthorized' }, 401, {}, [], origin)
+
+  const body = await parseJson(req)
+  const mediaType = body.media_type === 'video' ? 'video' : body.media_type === 'image' ? 'image' : null
+  const files = Array.isArray(body.files) ? body.files : []
+  if (!mediaType) return jsonResponse({ error: 'media_type must be image or video' }, 400, {}, [], origin)
+  if (!files.length) return jsonResponse({ error: 'No files provided' }, 400, {}, [], origin)
+
+  if (mediaType === 'image') {
+    if (files.length > MAX_IMAGES_PER_POST) return jsonResponse({ error: `Maximum ${MAX_IMAGES_PER_POST} images per post` }, 400, {}, [], origin)
+    for (const file of files) {
+      if (!POST_IMAGE_TYPES.includes(file?.content_type)) return jsonResponse({ error: 'Only JPG, JPEG, or PNG images are allowed' }, 400, {}, [], origin)
+      if (typeof file?.size !== 'number' || file.size <= 0 || file.size > MAX_IMAGE_SIZE) {
+        return jsonResponse({ error: 'Each image must be 50MB or smaller' }, 400, {}, [], origin)
+      }
+    }
+  } else {
+    if (files.length !== 1) return jsonResponse({ error: 'Exactly one video per post' }, 400, {}, [], origin)
+    const file = files[0]
+    if (typeof file?.content_type !== 'string' || !file.content_type.startsWith('video/')) {
+      return jsonResponse({ error: 'Only video files are allowed' }, 400, {}, [], origin)
+    }
+    if (typeof file?.size !== 'number' || file.size <= 0 || file.size > MAX_VIDEO_SIZE) {
+      return jsonResponse({ error: 'Video must be 500MB or smaller' }, 400, {}, [], origin)
+    }
+  }
+
+  const publicId = generatePostPublicId()
+  const uploads: Array<{ path: string; upload_url: string; content_type: string }> = []
+
+  for (let i = 0; i < files.length; i++) {
+    const contentType = files[i].content_type as string
+    const path = `${user.id}/${publicId}/${i}.${mediaExtension(contentType)}`
+    const signRes = await fetch(`${SUPABASE_URL}/storage/v1/object/upload/sign/${POST_MEDIA_BUCKET}/${path}`, {
+      method: 'POST',
+      headers: { ...authHeaders(true) },
+      body: JSON.stringify({}),
+    })
+    if (!signRes.ok) {
+      console.error('Failed to create signed upload URL:', await signRes.text().catch(() => ''))
+      return jsonResponse({ error: 'Failed to prepare upload' }, 500, {}, [], origin)
+    }
+    const signBody = await signRes.json().catch(() => ({}))
+    if (!signBody?.url) return jsonResponse({ error: 'Failed to prepare upload' }, 500, {}, [], origin)
+    uploads.push({ path, upload_url: `${SUPABASE_URL}/storage/v1${signBody.url}`, content_type: contentType })
+  }
+
+  return jsonResponse({ post_public_id: publicId, uploads }, 200, {}, [], origin)
+}
+
+const handleCreatePost = async (req: Request) => {
+  const origin = req.headers.get('origin')
+  const user = await requireUser(req)
+  if (!user) return jsonResponse({ error: 'Unauthorized' }, 401, {}, [], origin)
+
+  const body = await parseJson(req)
+  const publicId = typeof body.public_id === 'string' ? body.public_id : ''
+  const caption = typeof body.caption === 'string' ? body.caption.trim() : ''
+  const mediaType = body.media_type === 'video' ? 'video' : body.media_type === 'image' ? 'image' : null
+  const mediaPaths = Array.isArray(body.media_paths) ? body.media_paths.filter((p: unknown) => typeof p === 'string') : []
+  const isPaid = body.is_paid === true
+  const price = isPaid ? Number(body.price) : 0
+
+  if (!/^[A-Za-z0-9]{12}$/.test(publicId)) return jsonResponse({ error: 'Invalid post id' }, 400, {}, [], origin)
+  if (!mediaType) return jsonResponse({ error: 'media_type must be image or video' }, 400, {}, [], origin)
+  if (caption.length > 200) return jsonResponse({ error: 'Caption must be 200 characters or fewer' }, 400, {}, [], origin)
+  if (isPaid && (!Number.isFinite(price) || price < 10)) return jsonResponse({ error: 'Minimum price is ₹10 for paid posts' }, 400, {}, [], origin)
+  if (mediaType === 'image' && (mediaPaths.length < 1 || mediaPaths.length > MAX_IMAGES_PER_POST)) {
+    return jsonResponse({ error: `Post must contain 1-${MAX_IMAGES_PER_POST} images` }, 400, {}, [], origin)
+  }
+  if (mediaType === 'video' && mediaPaths.length !== 1) return jsonResponse({ error: 'Post must contain exactly one video' }, 400, {}, [], origin)
+
+  const prefix = `${user.id}/${publicId}/`
+  if (!mediaPaths.every((path: string) => path.startsWith(prefix))) {
+    return jsonResponse({ error: 'Invalid media paths' }, 400, {}, [], origin)
+  }
+
+  // Confirm the files actually landed in storage before creating the post row
+  const listRes = await fetch(`${SUPABASE_URL}/storage/v1/object/list/${POST_MEDIA_BUCKET}`, {
+    method: 'POST',
+    headers: { ...authHeaders(true) },
+    body: JSON.stringify({ prefix: `${user.id}/${publicId}`, limit: 100 }),
+  })
+  if (!listRes.ok) return jsonResponse({ error: 'Failed to verify uploads' }, 500, {}, [], origin)
+  const objects = await listRes.json().catch(() => [])
+  const uploadedNames = new Set((Array.isArray(objects) ? objects : []).map((obj: { name?: string }) => `${prefix}${obj?.name}`))
+  if (!mediaPaths.every((path: string) => uploadedNames.has(path))) {
+    return jsonResponse({ error: 'Some media files were not uploaded' }, 400, {}, [], origin)
+  }
+
+  const insertRes = await fetch(`${SUPABASE_URL}/rest/v1/posts`, {
+    method: 'POST',
+    headers: {
+      ...authHeaders(true),
+      Prefer: 'return=representation',
+    },
+    body: JSON.stringify([{
+      creator_id: user.id,
+      public_id: publicId,
+      caption,
+      media_type: mediaType,
+      media_url: '',
+      media_paths: mediaPaths,
+      is_paid: isPaid,
+      price: isPaid ? price : 0,
+    }]),
+  })
+
+  if (!insertRes.ok) {
+    const err = await insertRes.text().catch(() => '')
+    console.error('Failed to create post:', err)
+    return jsonResponse({ error: 'Failed to create post' }, 500, {}, [], origin)
+  }
+
+  const rows = await insertRes.json().catch(() => [])
+  const decorated = await decoratePosts(Array.isArray(rows) ? rows : [])
+  return jsonResponse({ status: 'post_created', post: decorated[0] || null }, 200, {}, [], origin)
+}
+
+const handleGetProfile = async (req: Request) => {
+  const origin = req.headers.get('origin')
+  const user = await requireUser(req)
+  if (!user) return jsonResponse({ error: 'Unauthorized' }, 401, {}, [], origin)
 
   const [res, postsCountRes, followersCountRes, followingCountRes, postsRes] = await Promise.all([
     fetch(
@@ -471,7 +657,7 @@ const handleGetProfile = async (req: Request) => {
       headers: { ...authHeaders(true), Prefer: 'count=exact', Range: '0-0' },
     }),
     fetch(
-      `${SUPABASE_URL}/rest/v1/posts?creator_id=eq.${user.id}&select=id,caption,media_type,media_url,is_paid,price,created_at&order=created_at.desc&limit=50`,
+      `${SUPABASE_URL}/rest/v1/posts?creator_id=eq.${user.id}&select=id,public_id,caption,media_type,media_paths,is_paid,price,created_at&order=created_at.desc&limit=50`,
       { headers: { ...authHeaders(true) } },
     ),
   ])
@@ -487,14 +673,15 @@ const handleGetProfile = async (req: Request) => {
     const total = range.split('/')[1]
     return total && total !== '*' ? Number(total) || 0 : 0
   }
-  const posts = postsRes.ok ? await postsRes.json().catch(() => []) : []
+  const rawPosts = postsRes.ok ? await postsRes.json().catch(() => []) : []
+  const posts = await decoratePosts(Array.isArray(rawPosts) ? rawPosts : [])
   const stats = {
     posts: postsCountRes.ok ? readCount(postsCountRes) : 0,
     followers: followersCountRes.ok ? readCount(followersCountRes) : 0,
     following: followingCountRes.ok ? readCount(followingCountRes) : 0,
   }
 
-  return jsonResponse({ profile, stats, posts: Array.isArray(posts) ? posts : [] }, 200, {}, [], origin)
+  return jsonResponse({ profile, stats, posts }, 200, {}, [], origin)
 }
 
 const handleProfile = async (req: Request) => {
@@ -656,6 +843,8 @@ serve(async (req) => {
   if (isRoute('reset') && req.method === 'POST') return handleReset(req)
   if (isRoute('profile') && req.method === 'GET') return handleGetProfile(req)
   if (isRoute('profile') && req.method === 'POST') return handleProfile(req)
+  if (isRoute('post-upload-urls') && req.method === 'POST') return handlePostUploadUrls(req)
+  if (isRoute('posts') && req.method === 'POST') return handleCreatePost(req)
 
   return jsonResponse({ error: 'Not Found' }, 404, {}, [], req.headers.get('origin'))
 })
