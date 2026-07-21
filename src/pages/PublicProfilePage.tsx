@@ -85,13 +85,14 @@ export default function PublicProfilePage() {
   const mobile = useMobileDevice();
   const navigate = useNavigate();
   const { username: slug = "" } = useParams<{ username: string }>();
-  const { user } = useAuth();
+  const { user, loading: authLoading } = useAuth();
   const [data, setData] = useState<PublicProfileData | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [tab, setTab] = useState<"image" | "video">("image");
   const [following, setFollowing] = useState(false);
   const [actionLoading, setActionLoading] = useState(false);
+  const [actionError, setActionError] = useState("");
   const [paymentError, setPaymentError] = useState("");
   const [installPrompt, setInstallPrompt] = useState<InstallPromptEvent | null>(null);
   const [installHelp, setInstallHelp] = useState(false);
@@ -179,10 +180,16 @@ export default function PublicProfilePage() {
   );
   const hero = data?.posts.find((post) => post.media_type === "image" && post.media_url);
   const userLogin = () => navigate(`/userlogin?redirect=${encodeURIComponent(slug)}`);
+  const isLoggedIn = Boolean(user) || Boolean(data?.viewer?.authenticated);
+  const isOwnPage =
+    Boolean(user?.user_metadata?.username) &&
+    String(user.user_metadata.username).toLowerCase() === String(data?.profile.username || "").toLowerCase();
+
   const openAccount = () => {
-    if (!user) return userLogin();
-    const role = user.user_metadata?.role;
-    const creatorUsername = user.user_metadata?.username;
+    if (authLoading) return;
+    if (!isLoggedIn) return userLogin();
+    const role = user?.user_metadata?.role || data?.viewer?.role;
+    const creatorUsername = user?.user_metadata?.username;
     if (role === "creator" && creatorUsername) {
       navigate(`/${creatorUsername}`);
       return;
@@ -192,15 +199,34 @@ export default function PublicProfilePage() {
 
   // Server 401s are the final authority: a stale client session must never
   // leave the user on the page thinking the action worked.
-  const isAuthError = (error?: string) =>
-    Boolean(error && /unauthorized|login required|login/i.test(error));
+  const isAuthError = (message?: string) =>
+    Boolean(message && /unauthorized|login required|valid account required/i.test(message));
+
+  const requireLogin = () => {
+    if (authLoading) return false;
+    if (!isLoggedIn) {
+      userLogin();
+      return false;
+    }
+    return true;
+  };
 
   const follow = async () => {
-    if (!user) return userLogin();
+    if (actionLoading || authLoading) return;
+    setActionError("");
+    if (!requireLogin()) return;
+    if (isOwnPage) {
+      setActionError("You can't follow your own page.");
+      return;
+    }
     setActionLoading(true);
     const response = await togglePublicFollow(slug);
     setActionLoading(false);
     if (isAuthError(response.error)) return userLogin();
+    if (response.error) {
+      setActionError(response.error);
+      return;
+    }
     if (typeof response.following === "boolean") {
       setFollowing(response.following);
       setData((prev) =>
@@ -218,17 +244,29 @@ export default function PublicProfilePage() {
   };
 
   const chat = async () => {
-    if (!user) return userLogin();
+    if (actionLoading || authLoading) return;
+    setActionError("");
+    if (!requireLogin()) return;
     if (!data) return;
+    if (isOwnPage) {
+      setActionError("You can't chat with your own page.");
+      return;
+    }
     setActionLoading(true);
     const response = await startConversation(data.profile.username);
     setActionLoading(false);
     if (isAuthError(response.error)) return userLogin();
+    if (response.error) {
+      setActionError(response.error);
+      return;
+    }
     if (response.conversation_id) navigate(`/user-chat/${response.conversation_id}`);
   };
 
   const openPost = async (post: PublicProfilePost) => {
-    if (!user) return userLogin();
+    if (actionLoading || authLoading) return;
+    setActionError("");
+    if (!requireLogin()) return;
     setPaymentError("");
     setActionLoading(true);
 
@@ -327,10 +365,18 @@ export default function PublicProfilePage() {
                 <div className="w-7 h-7 rounded-full border border-white/80 flex items-center justify-center">
                   <LayoutDashboard className="w-4 h-4" />
                 </div>
-                <span>{user ? "Account" : "Login"}</span>
+                <span>{isLoggedIn ? "Account" : "Login"}</span>
               </button>
-              <button onClick={follow} className="flex flex-col items-center text-[11px]">
-                <UserPlus className="w-5 h-5 mt-1" />
+              <button
+                onClick={follow}
+                disabled={actionLoading || authLoading}
+                className="flex flex-col items-center text-[11px] disabled:opacity-60"
+              >
+                {actionLoading ? (
+                  <Loader2 className="w-5 h-5 mt-1 animate-spin" />
+                ) : (
+                  <UserPlus className="w-5 h-5 mt-1" />
+                )}
                 <span>{following ? "Following" : "Follow"}</span>
               </button>
             </div>
@@ -397,23 +443,25 @@ export default function PublicProfilePage() {
               )}
               <div className="grid grid-cols-2 gap-3 mt-6">
                 <button
-                  disabled={actionLoading}
+                  disabled={actionLoading || authLoading}
                   onClick={follow}
                   className="h-11 rounded-lg bg-rose-500 text-white font-semibold text-sm flex items-center justify-center gap-2 disabled:opacity-60"
                 >
-                  <UserPlus className="w-4 h-4" />
+                  {actionLoading ? <Loader2 className="w-4 h-4 animate-spin" /> : <UserPlus className="w-4 h-4" />}
                   {following ? "Following" : "Follow"}
                 </button>
                 <button
-                  disabled={actionLoading}
+                  disabled={actionLoading || authLoading}
                   onClick={chat}
                   className="h-11 rounded-lg bg-rose-500 text-white font-semibold text-sm flex items-center justify-center gap-2 disabled:opacity-60"
                 >
-                  <MessageCircle className="w-4 h-4" />
+                  {actionLoading ? <Loader2 className="w-4 h-4 animate-spin" /> : <MessageCircle className="w-4 h-4" />}
                   Chat Now
                 </button>
               </div>
-              {paymentError && <p className="mt-3 text-sm text-red-600">{paymentError}</p>}
+              {(actionError || paymentError) && (
+                <p className="mt-3 text-sm text-red-600">{actionError || paymentError}</p>
+              )}
             </section>
 
             <section className="bg-[#effff7] min-h-[68vh] px-4 pb-20">
