@@ -5,6 +5,8 @@ const SERVICE_ROLE_KEY = Deno.env.get('AUTH_SERVICE_ROLE_KEY') || Deno.env.get('
 const ANON_KEY = Deno.env.get('AUTH_ANON_KEY') || Deno.env.get('SUPABASE_ANON_KEY') || Deno.env.get('AUTH_PUBLISHABLE_KEYS') || Deno.env.get('SUPABASE_PUBLISHABLE_KEYS')
 const RESEND_API_KEY = Deno.env.get('AUTH_RESEND_API_KEY') || Deno.env.get('RESEND_API_KEY')
 const AUTH_EMAIL_FROM = Deno.env.get('AUTH_EMAIL_FROM') || 'welcome@mallucupid.com'
+const PUBLIC_APP_URL = (Deno.env.get('AUTH_PUBLIC_APP_URL') || ALLOWED_CORS_ORIGINS[0] || 'https://www.mallucupid.com').replace(/\/$/, '')
+const LOGO_URL = `${PUBLIC_APP_URL}/mallucupid-icon.svg`
 const AUTH_CORS_ORIGIN = Deno.env.get('AUTH_CORS_ORIGIN') || 'https://www.mallucupid.com'
 const ALLOWED_CORS_ORIGINS = AUTH_CORS_ORIGIN.split(',').map((origin) => origin.trim()).filter(Boolean)
 
@@ -118,6 +120,176 @@ const sendVerificationEmail = async (email: string, token: string): Promise<{ ok
   }
 
   return { ok: true }
+}
+
+const escapeHtml = (value: string) =>
+  value
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;')
+
+const getAuthUserEmail = async (userId: string): Promise<string> => {
+  const res = await fetch(`${SUPABASE_URL}/auth/v1/admin/users/${userId}`, {
+    headers: authHeaders(true),
+  })
+  if (!res.ok) {
+    console.error('getAuthUserEmail failed:', await res.text().catch(() => ''))
+    return ''
+  }
+  const body = await res.json().catch(() => ({}))
+  return typeof body.email === 'string' ? body.email.trim() : ''
+}
+
+const getCreatorGreetingName = async (creatorId: string): Promise<string> => {
+  const profile = await fetch(
+    `${SUPABASE_URL}/rest/v1/profiles?id=eq.${creatorId}&select=full_name,username&limit=1`,
+    { headers: { ...authHeaders(true) } },
+  )
+  const rows = profile.ok ? await profile.json().catch(() => []) : []
+  const row = Array.isArray(rows) && rows.length ? rows[0] : null
+  return (row?.full_name || row?.username || 'Creator').toString()
+}
+
+const getActorDisplayName = async (actorId: string): Promise<string> => {
+  const profileRes = await fetch(
+    `${SUPABASE_URL}/rest/v1/profiles?id=eq.${actorId}&select=username,full_name&limit=1`,
+    { headers: { ...authHeaders(true) } },
+  )
+  const profiles = profileRes.ok ? await profileRes.json().catch(() => []) : []
+  const profile = Array.isArray(profiles) && profiles.length ? profiles[0] : null
+  if (profile?.username) return String(profile.username)
+  if (profile?.full_name) return String(profile.full_name)
+
+  const account = await getAccount(actorId)
+  if (account?.name) return String(account.name)
+  return 'A MalluCupid user'
+}
+
+const buildCreatorNotificationHtml = (opts: {
+  creatorName: string
+  headline: string
+  message: string
+  detail?: string
+}) => {
+  const creator = escapeHtml(opts.creatorName)
+  const headline = escapeHtml(opts.headline)
+  const message = escapeHtml(opts.message)
+  const detail = opts.detail ? escapeHtml(opts.detail) : ''
+  return `<!DOCTYPE html>
+<html>
+  <body style="margin:0;padding:0;background:#fff5f7;font-family:Arial,Helvetica,sans-serif;color:#18181b;">
+    <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="background:#fff5f7;padding:32px 16px;">
+      <tr>
+        <td align="center">
+          <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="max-width:560px;background:#ffffff;border-radius:24px;overflow:hidden;border:1px solid #ffe4e6;">
+            <tr>
+              <td style="padding:28px 28px 12px;text-align:center;background:linear-gradient(180deg,#fff1f2 0%,#ffffff 100%);">
+                <img src="${LOGO_URL}" alt="MalluCupid" width="64" height="64" style="display:block;margin:0 auto 16px;border-radius:16px;" />
+                <div style="font-size:22px;font-weight:700;color:#f43f5e;letter-spacing:-0.02em;">MalluCupid</div>
+              </td>
+            </tr>
+            <tr>
+              <td style="padding:8px 28px 28px;">
+                <p style="margin:0 0 12px;font-size:16px;line-height:1.5;">Hi <strong>${creator}</strong>,</p>
+                <p style="margin:0 0 16px;font-size:18px;font-weight:700;color:#18181b;">${headline}</p>
+                <p style="margin:0 0 12px;font-size:15px;line-height:1.6;color:#3f3f46;">${message}</p>
+                ${detail ? `<p style="margin:0;padding:14px 16px;background:#fff1f2;border-radius:14px;font-size:14px;line-height:1.5;color:#9f1239;">${detail}</p>` : ''}
+                <p style="margin:24px 0 0;font-size:13px;line-height:1.5;color:#a1a1aa;">Keep creating. Your audience is growing on MalluCupid.</p>
+              </td>
+            </tr>
+          </table>
+        </td>
+      </tr>
+    </table>
+  </body>
+</html>`
+}
+
+const sendResendEmail = async (opts: {
+  to: string
+  subject: string
+  html: string
+}): Promise<boolean> => {
+  if (!RESEND_API_KEY) {
+    console.error('sendResendEmail: RESEND_API_KEY is not configured')
+    return false
+  }
+  if (!opts.to) return false
+  const res = await fetch('https://api.resend.com/emails', {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${RESEND_API_KEY}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      from: AUTH_EMAIL_FROM,
+      to: [opts.to],
+      subject: opts.subject,
+      html: opts.html,
+    }),
+  })
+  if (!res.ok) {
+    console.error('sendResendEmail failed:', await res.text().catch(() => ''))
+    return false
+  }
+  return true
+}
+
+/** Fire-and-forget creator emails. Never blocks the API response path. */
+const notifyCreatorByEmail = async (opts: {
+  creatorId: string
+  actorId: string
+  kind: 'follow' | 'purchase'
+  amount?: number
+  currency?: string
+  postPublicId?: string
+}) => {
+  try {
+    if (!opts.creatorId || !opts.actorId || opts.creatorId === opts.actorId) return
+    const [to, creatorName, actorName] = await Promise.all([
+      getAuthUserEmail(opts.creatorId),
+      getCreatorGreetingName(opts.creatorId),
+      getActorDisplayName(opts.actorId),
+    ])
+    if (!to) {
+      console.error('notifyCreatorByEmail: creator signup email missing', opts.creatorId)
+      return
+    }
+
+    if (opts.kind === 'follow') {
+      await sendResendEmail({
+        to,
+        subject: `@${actorName} followed you on MalluCupid`,
+        html: buildCreatorNotificationHtml({
+          creatorName,
+          headline: 'You have a new follower',
+          message: `@${actorName} just followed your MalluCupid account.`,
+          detail: 'Open your dashboard to welcome them and keep sharing exclusive content.',
+        }),
+      })
+      return
+    }
+
+    const amountLabel = typeof opts.amount === 'number'
+      ? `₹${Number(opts.amount).toFixed(2)}`
+      : 'a paid amount'
+    await sendResendEmail({
+      to,
+      subject: `@${actorName} unlocked your paid post`,
+      html: buildCreatorNotificationHtml({
+        creatorName,
+        headline: 'You made a sale',
+        message: `@${actorName} paid ${amountLabel} and unlocked one of your exclusive posts.`,
+        detail: opts.postPublicId
+          ? `Post ID: ${opts.postPublicId}`
+          : 'Check your wallet and notifications for the latest unlock.',
+      }),
+    })
+  } catch (error) {
+    console.error('notifyCreatorByEmail error:', error)
+  }
 }
 
 const authErrorMessage = (data: Record<string, unknown>, fallback: string) => {
@@ -1072,6 +1244,14 @@ const handlePublicFollow = async (req: Request) => {
     return jsonResponse({ error: 'Failed to update follow' }, 500, {}, [], origin)
   }
   const following = await toggleRes.json().catch(() => false)
+  if (following === true) {
+    // Email only on new follow, never on unfollow. Uses creator signup email.
+    notifyCreatorByEmail({
+      creatorId: creator.id,
+      actorId: user.id,
+      kind: 'follow',
+    }).catch(() => {})
+  }
   return jsonResponse({ following: following === true }, 200, {}, [], origin)
 }
 
@@ -2052,6 +2232,14 @@ const recordPaidPurchase = async (
     post_id: post.id as string,
     post_public_id: post.public_id as string,
   })
+  notifyCreatorByEmail({
+    creatorId: post.creator_id as string,
+    actorId: userId,
+    kind: 'purchase',
+    amount: Number(purchase.amount) || undefined,
+    currency: typeof purchase.currency === 'string' ? purchase.currency : 'INR',
+    postPublicId: String(post.public_id || ''),
+  }).catch(() => {})
   return true
 }
 
