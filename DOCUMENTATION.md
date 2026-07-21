@@ -177,3 +177,11 @@ The application uses URL-based pagination (React Router) with the following rout
 - Public page redesign (reference link-in-bio layout): hero cover, Install PWA button, Login/Follow overlays, avatar, "Hi, I'm …", posts/followers, Follow + Chat Now, Exclusive Content photo/video tabs, then a large bottom **"Be a creator / Start Earning"** section that sits well below the posts (no overlay). PWA: `manifest.webmanifest`, icon, service worker; Install uses Chrome `beforeinstallprompt` when available, otherwise shows Android/iOS Add-to-Home-Screen instructions.
 - Guest content routes: `/view/:postId` (media viewer) and `/user-chat/:conversationId` for logged-in consumers outside the creator app shell.
 
+## Live Razorpay paid-post reconciliation
+
+- Razorpay live credentials are stored only as Supabase Edge Function secrets (`RAZORPAY_KEY_ID`, `RAZORPAY_KEY_SECRET`). The secret is never returned to or bundled in the frontend; checkout returns only the publishable key and server-created order data.
+- Clicking a paid tile on a public creator page first calls the authenticated backend `GET /post`. Owners and users with a permanent `post_purchases.status='paid'` row open `/view/:postId` immediately. Unpaid users call `POST /post-checkout`, which creates or safely reuses the same Razorpay order and opens the real Razorpay Checkout.
+- Migration `013` adds purchase audit fields: `creator_id`, `amount_paise`, `provider`, and `verified_at`, while the existing unique `(post_id,user_id)` enforces one permanent purchase record per user/post.
+- Razorpay callback goes to `/payment-confirmation?post=&order=`. The page verifies the HMAC callback server-side, then polls `GET /post-payment-status`. The backend independently fetches Razorpay payment/order data and validates order ID, captured status, INR currency, and exact immutable amount before granting access.
+- If the browser callback is lost after debit, the confirmation page and subsequent checkout reconcile the existing order through Razorpay's server API. A captured payment is recorded and unlocked; an authorized/processing payment shows **Confirmation pending / Do not pay again** rather than a false failure. Purchase recording is atomic/idempotent, so concurrent confirmation calls cannot duplicate the purchase notification.
+

@@ -305,6 +305,15 @@ export async function verifyPostPayment(data: {
   return apiPost('/post-verify-payment', data);
 }
 
+export async function getPostPaymentStatus(
+  publicId: string,
+  orderId = '',
+): Promise<{ status?: 'paid' | 'processing' | 'unpaid'; has_access?: boolean; error?: string }> {
+  const query = new URLSearchParams({ public_id: publicId });
+  if (orderId) query.set('order_id', orderId);
+  return apiGet(`/post-payment-status?${query.toString()}`);
+}
+
 export interface ConversationItem {
   id: string;
   status: 'pending' | 'accepted';

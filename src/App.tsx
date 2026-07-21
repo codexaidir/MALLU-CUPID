@@ -35,6 +35,7 @@ import UserLogin from "./pages/UserLogin";
 import UserSignup from "./pages/UserSignup";
 import UserOtpVerify from "./pages/UserOtpVerify";
 import UserPasswordReset from "./pages/UserPasswordReset";
+import PaymentConfirmationPage from "./pages/PaymentConfirmationPage";
 
 function LandingPage() {
   return (
@@ -135,6 +136,7 @@ export default function App() {
             <Route path="/userotpverify" element={<UserOtpVerify />} />
             <Route path="/userpasswordreset" element={<UserPasswordReset />} />
             <Route path="/view/:postId" element={<MediaViewerPage />} />
+            <Route path="/payment-confirmation" element={<PaymentConfirmationPage />} />
             <Route path="/user-chat/:conversationId" element={<ChatPage />} />
 
             {/* Legacy paths redirect to /<username>/... */}

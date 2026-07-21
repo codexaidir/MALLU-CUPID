@@ -6,10 +6,11 @@ import {
   MessageCircle, MonitorX, Play, PlaySquare, Share, UserPlus, X,
 } from "lucide-react";
 import {
-  getPublicProfile, startConversation, togglePublicFollow,
+  checkoutPost, getPost, getPublicProfile, startConversation, togglePublicFollow,
   type PublicProfileData, type PublicProfilePost,
 } from "../lib/auth";
 import { useAuth } from "../lib/useAuth";
+import { loadRazorpay, type RazorpaySuccess } from "../lib/razorpay";
 
 interface InstallPromptEvent extends Event {
   prompt: () => Promise<void>;
@@ -91,6 +92,7 @@ export default function PublicProfilePage() {
   const [tab, setTab] = useState<"image" | "video">("image");
   const [following, setFollowing] = useState(false);
   const [actionLoading, setActionLoading] = useState(false);
+  const [paymentError, setPaymentError] = useState("");
   const [installPrompt, setInstallPrompt] = useState<InstallPromptEvent | null>(null);
   const [installHelp, setInstallHelp] = useState(false);
   const [installed, setInstalled] = useState(matchMedia("(display-mode: standalone)").matches);
@@ -176,9 +178,64 @@ export default function PublicProfilePage() {
     if (response.conversation_id) navigate(`/user-chat/${response.conversation_id}`);
   };
 
-  const openPost = (post: PublicProfilePost) => {
+  const openPost = async (post: PublicProfilePost) => {
     if (!user) return userLogin();
-    navigate(`/view/${post.public_id}`);
+    setPaymentError("");
+    setActionLoading(true);
+
+    // Always ask the backend first. It is the only authority for ownership
+    // and permanent purchase access.
+    const detail = await getPost(post.public_id);
+    if (detail.post?.has_access || !post.is_paid) {
+      setActionLoading(false);
+      navigate(`/view/${post.public_id}`);
+      return;
+    }
+    const checkout = await checkoutPost(post.public_id);
+    if (checkout.already_unlocked) {
+      setActionLoading(false);
+      navigate(`/view/${post.public_id}`);
+      return;
+    }
+    if (checkout.error || !checkout.order_id || !checkout.key_id) {
+      setActionLoading(false);
+      setPaymentError(checkout.error || "Unable to start payment.");
+      return;
+    }
+    const loaded = await loadRazorpay();
+    if (!loaded || !window.Razorpay) {
+      setActionLoading(false);
+      setPaymentError("Could not load Razorpay. Check your connection and try again.");
+      return;
+    }
+    const confirmationUrl = `/payment-confirmation?post=${encodeURIComponent(post.public_id)}&order=${encodeURIComponent(checkout.order_id)}`;
+    const gateway = new window.Razorpay({
+      key: checkout.key_id,
+      amount: checkout.amount,
+      currency: checkout.currency || "INR",
+      name: "MalluCupid",
+      description: `Unlock @${data?.profile.username || "creator"} post`,
+      order_id: checkout.order_id,
+      prefill: {
+        email: user.email || "",
+        name: user.user_metadata?.name || "",
+      },
+      notes: { post_public_id: post.public_id },
+      theme: { color: "#f43f5e" },
+      handler: (payment: RazorpaySuccess) => {
+        setActionLoading(false);
+        navigate(confirmationUrl, { state: { payment } });
+      },
+      modal: {
+        ondismiss: () => {
+          setActionLoading(false);
+          // Reconcile the order server-side in case money was debited but the
+          // browser callback was interrupted.
+          navigate(confirmationUrl);
+        },
+      },
+    });
+    gateway.open();
   };
 
   const install = async () => {
@@ -294,6 +351,7 @@ export default function PublicProfilePage() {
                   Chat Now
                 </button>
               </div>
+              {paymentError && <p className="mt-3 text-sm text-red-600">{paymentError}</p>}
             </section>
 
             <section className="bg-[#effff7] min-h-[68vh] px-4 pb-20">

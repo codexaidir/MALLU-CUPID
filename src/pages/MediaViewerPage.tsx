@@ -6,26 +6,10 @@ import {
   Play, Pause, Loader2, LockKeyhole, AlertCircle, X,
 } from "lucide-react";
 import {
-  getPost, togglePostLike, deletePost, checkoutPost, verifyPostPayment,
+  getPost, togglePostLike, deletePost, checkoutPost,
   type PostDetail,
 } from "../lib/auth";
-
-declare global {
-  interface Window {
-    Razorpay?: new (options: Record<string, unknown>) => { open: () => void };
-  }
-}
-
-function loadRazorpayScript(): Promise<boolean> {
-  return new Promise((resolve) => {
-    if (window.Razorpay) return resolve(true);
-    const script = document.createElement("script");
-    script.src = "https://checkout.razorpay.com/v1/checkout.js";
-    script.onload = () => resolve(true);
-    script.onerror = () => resolve(false);
-    document.body.appendChild(script);
-  });
-}
+import { loadRazorpay, type RazorpaySuccess } from "../lib/razorpay";
 
 const formatTime = (seconds: number) => {
   if (!Number.isFinite(seconds)) return "0:00";
@@ -125,7 +109,7 @@ export default function MediaViewerPage() {
       return;
     }
 
-    const loaded = await loadRazorpayScript();
+    const loaded = await loadRazorpay();
     if (!loaded || !window.Razorpay) {
       setPayError("Could not load the payment gateway. Check your connection and try again.");
       setIsPaying(false);
@@ -140,26 +124,20 @@ export default function MediaViewerPage() {
       description: "Unlock exclusive post",
       order_id: checkout.order_id,
       theme: { color: "#f43f5e" },
-      handler: async (payment: {
-        razorpay_order_id: string;
-        razorpay_payment_id: string;
-        razorpay_signature: string;
-      }) => {
-        const verified = await verifyPostPayment({
-          public_id: post.public_id,
-          razorpay_order_id: payment.razorpay_order_id,
-          razorpay_payment_id: payment.razorpay_payment_id,
-          razorpay_signature: payment.razorpay_signature,
-        });
-        if (verified.status === "paid") {
-          await loadPost();
-        } else {
-          setPayError(verified.error || "Payment verification failed. Contact support if you were charged.");
-        }
+      handler: (payment: RazorpaySuccess) => {
         setIsPaying(false);
+        navigate(
+          `/payment-confirmation?post=${encodeURIComponent(post.public_id)}&order=${encodeURIComponent(payment.razorpay_order_id)}`,
+          { state: { payment } },
+        );
       },
       modal: {
-        ondismiss: () => setIsPaying(false),
+        ondismiss: () => {
+          setIsPaying(false);
+          navigate(
+            `/payment-confirmation?post=${encodeURIComponent(post.public_id)}&order=${encodeURIComponent(checkout.order_id as string)}`,
+          );
+        },
       },
     });
     razorpay.open();

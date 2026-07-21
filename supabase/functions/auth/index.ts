@@ -1789,6 +1789,42 @@ const handlePostCheckout = async (req: Request) => {
     return jsonResponse({ error: 'Invalid post price' }, 500, {}, [], origin)
   }
 
+  // Reconcile/reuse an existing pending order. This prevents creating a new
+  // charge request when the previous payment was captured but its browser
+  // callback was lost.
+  const pendingRes = await fetch(
+    `${SUPABASE_URL}/rest/v1/post_purchases?post_id=eq.${post.id}&user_id=eq.${user.id}&select=id,status,amount,amount_paise,creator_id,razorpay_order_id,razorpay_payment_id&limit=1`,
+    { headers: { ...authHeaders(true) } },
+  )
+  const pendingRows = pendingRes.ok ? await pendingRes.json().catch(() => []) : []
+  const pending = Array.isArray(pendingRows) && pendingRows.length ? pendingRows[0] : null
+  if (pending?.status === 'created' && pending.razorpay_order_id) {
+    const payments = await razorpayGet(`/orders/${encodeURIComponent(pending.razorpay_order_id)}/payments`)
+    const items = Array.isArray(payments?.items) ? payments.items : []
+    const captured = items.find((payment: Record<string, unknown>) =>
+      payment.status === 'captured'
+        && paymentMatchesPurchase(payment, pending, pending.razorpay_order_id),
+    )
+    if (captured?.id && await recordPaidPurchase(pending, post, user.id, captured.id)) {
+      return jsonResponse({ already_unlocked: true }, 200, {}, [], origin)
+    }
+    const existingOrder = await razorpayGet(`/orders/${encodeURIComponent(pending.razorpay_order_id)}`)
+    if (
+      existingOrder?.id
+      && existingOrder.status !== 'paid'
+      && Number(existingOrder.amount) === amountPaise
+      && existingOrder.currency === 'INR'
+    ) {
+      return jsonResponse({
+        key_id: RAZORPAY_KEY_ID,
+        order_id: existingOrder.id,
+        amount: amountPaise,
+        currency: 'INR',
+        post_public_id: post.public_id,
+      }, 200, {}, [], origin)
+    }
+  }
+
   const orderRes = await fetch('https://api.razorpay.com/v1/orders', {
     method: 'POST',
     headers: {
@@ -1817,10 +1853,14 @@ const handlePostCheckout = async (req: Request) => {
     headers: { ...authHeaders(true), Prefer: 'resolution=merge-duplicates,return=minimal' },
     body: JSON.stringify([{
       post_id: post.id,
+      creator_id: post.creator_id,
       user_id: user.id,
       amount: post.price,
+      amount_paise: amountPaise,
       currency: 'INR',
+      provider: 'razorpay',
       razorpay_order_id: order.id,
+      razorpay_payment_id: '',
       status: 'created',
     }]),
   })
@@ -1851,6 +1891,67 @@ const hmacSha256Hex = async (secret: string, message: string) => {
   return Array.from(new Uint8Array(signature)).map((b) => b.toString(16).padStart(2, '0')).join('')
 }
 
+const razorpayGet = async (path: string) => {
+  if (!RAZORPAY_KEY_ID || !RAZORPAY_KEY_SECRET) return null
+  const res = await fetch(`https://api.razorpay.com/v1${path}`, {
+    headers: { Authorization: `Basic ${btoa(`${RAZORPAY_KEY_ID}:${RAZORPAY_KEY_SECRET}`)}` },
+  })
+  if (!res.ok) {
+    console.error(`Razorpay lookup failed (${path}):`, await res.text().catch(() => ''))
+    return null
+  }
+  return res.json().catch(() => null)
+}
+
+const recordPaidPurchase = async (
+  purchase: Record<string, unknown>,
+  post: Record<string, unknown>,
+  userId: string,
+  paymentId: string,
+) => {
+  const updateRes = await fetch(`${SUPABASE_URL}/rest/v1/post_purchases?id=eq.${purchase.id}&status=eq.created`, {
+    method: 'PATCH',
+    headers: { ...authHeaders(true), Prefer: 'return=representation' },
+    body: JSON.stringify({
+      status: 'paid',
+      razorpay_payment_id: paymentId,
+      paid_at: new Date().toISOString(),
+      verified_at: new Date().toISOString(),
+    }),
+  })
+  if (!updateRes.ok) return false
+  const updated = await updateRes.json().catch(() => [])
+  // Another verification request may have won the race. It has already
+  // recorded access and sent the notification, so this call is also success.
+  if (!Array.isArray(updated) || !updated.length) {
+    const checkRes = await fetch(
+      `${SUPABASE_URL}/rest/v1/post_purchases?id=eq.${purchase.id}&status=eq.paid&select=id&limit=1`,
+      { headers: { ...authHeaders(true) } },
+    )
+    const rows = checkRes.ok ? await checkRes.json().catch(() => []) : []
+    return Array.isArray(rows) && rows.length > 0
+  }
+  await createNotification({
+    user_id: post.creator_id as string,
+    actor_id: userId,
+    type: 'purchase',
+    post_id: post.id as string,
+    post_public_id: post.public_id as string,
+  })
+  return true
+}
+
+const paymentMatchesPurchase = (
+  payment: Record<string, unknown>,
+  purchase: Record<string, unknown>,
+  orderId: string,
+) => {
+  const expectedPaise = Number(purchase.amount_paise || Math.round(Number(purchase.amount) * 100))
+  return payment.order_id === orderId
+    && payment.currency === 'INR'
+    && Number(payment.amount) === expectedPaise
+}
+
 const handleVerifyPostPayment = async (req: Request) => {
   const origin = req.headers.get('origin')
   const user = await requireUser(req)
@@ -1868,7 +1969,7 @@ const handleVerifyPostPayment = async (req: Request) => {
 
   // The pending purchase row must match this user, post, and order
   const purchaseRes = await fetch(
-    `${SUPABASE_URL}/rest/v1/post_purchases?post_id=eq.${post.id}&user_id=eq.${user.id}&razorpay_order_id=eq.${encodeURIComponent(orderId)}&select=id,status&limit=1`,
+    `${SUPABASE_URL}/rest/v1/post_purchases?post_id=eq.${post.id}&user_id=eq.${user.id}&razorpay_order_id=eq.${encodeURIComponent(orderId)}&select=id,status,amount,amount_paise,creator_id&limit=1`,
     { headers: { ...authHeaders(true) } },
   )
   const purchaseRows = purchaseRes.ok ? await purchaseRes.json().catch(() => []) : []
@@ -1879,30 +1980,66 @@ const handleVerifyPostPayment = async (req: Request) => {
   const expected = await hmacSha256Hex(RAZORPAY_KEY_SECRET, `${orderId}|${paymentId}`)
   if (expected !== signature) return jsonResponse({ error: 'Payment verification failed' }, 400, {}, [], origin)
 
-  const updateRes = await fetch(`${SUPABASE_URL}/rest/v1/post_purchases?id=eq.${purchase.id}`, {
-    method: 'PATCH',
-    headers: { ...authHeaders(true), Prefer: 'return=minimal' },
-    body: JSON.stringify({
-      status: 'paid',
-      razorpay_payment_id: paymentId,
-      paid_at: new Date().toISOString(),
-    }),
-  })
-
-  if (!updateRes.ok) {
-    console.error('Purchase confirm failed:', await updateRes.text().catch(() => ''))
-    return jsonResponse({ error: 'Failed to record payment' }, 500, {}, [], origin)
+  // Signature alone proves the callback, not settlement. Verify the payment
+  // against Razorpay's server API and the immutable DB amount/order snapshot.
+  const payment = await razorpayGet(`/payments/${encodeURIComponent(paymentId)}`)
+  if (!payment || !paymentMatchesPurchase(payment, purchase, orderId)) {
+    return jsonResponse({ error: 'Payment details did not match this purchase' }, 400, {}, [], origin)
+  }
+  if (payment.status !== 'captured') {
+    return jsonResponse({ status: 'processing' }, 202, {}, [], origin)
+  }
+  if (!await recordPaidPurchase(purchase, post, user.id, paymentId)) {
+    return jsonResponse({ error: 'Payment was captured but access recording is pending' }, 503, {}, [], origin)
   }
 
-  await createNotification({
-    user_id: post.creator_id,
-    actor_id: user.id,
-    type: 'purchase',
-    post_id: post.id,
-    post_public_id: post.public_id,
-  })
-
   return jsonResponse({ status: 'paid' }, 200, {}, [], origin)
+}
+
+const handlePostPaymentStatus = async (req: Request, url: URL) => {
+  const origin = req.headers.get('origin')
+  const user = await requireUser(req)
+  if (!user) return jsonResponse({ error: 'Unauthorized' }, 401, {}, [], origin)
+  const post = await fetchPostByPublicId(url.searchParams.get('public_id') || '')
+  if (!post) return jsonResponse({ error: 'Post not found' }, 404, {}, [], origin)
+  if (post.creator_id === user.id || post.is_paid !== true) {
+    return jsonResponse({ status: 'paid', has_access: true }, 200, {}, [], origin)
+  }
+
+  const orderFilter = url.searchParams.get('order_id')
+  const orderClause = orderFilter ? `&razorpay_order_id=eq.${encodeURIComponent(orderFilter)}` : ''
+  const purchaseRes = await fetch(
+    `${SUPABASE_URL}/rest/v1/post_purchases?post_id=eq.${post.id}&user_id=eq.${user.id}${orderClause}&select=id,status,amount,amount_paise,creator_id,razorpay_order_id,razorpay_payment_id&order=created_at.desc&limit=1`,
+    { headers: { ...authHeaders(true) } },
+  )
+  const rows = purchaseRes.ok ? await purchaseRes.json().catch(() => []) : []
+  const purchase = Array.isArray(rows) && rows.length ? rows[0] : null
+  if (!purchase) return jsonResponse({ status: 'unpaid', has_access: false }, 200, {}, [], origin)
+  if (purchase.status === 'paid') return jsonResponse({ status: 'paid', has_access: true }, 200, {}, [], origin)
+  if (!RAZORPAY_KEY_ID || !RAZORPAY_KEY_SECRET) {
+    return jsonResponse({ status: 'processing', has_access: false }, 200, {}, [], origin)
+  }
+
+  // Recovery path if the browser callback was lost after money was debited.
+  const payments = await razorpayGet(`/orders/${encodeURIComponent(purchase.razorpay_order_id)}/payments`)
+  const items = Array.isArray(payments?.items) ? payments.items : []
+  const captured = items.find((payment: Record<string, unknown>) =>
+    payment.status === 'captured'
+      && paymentMatchesPurchase(payment, purchase, purchase.razorpay_order_id),
+  )
+  if (captured?.id) {
+    const recorded = await recordPaidPurchase(purchase, post, user.id, captured.id)
+    if (recorded) return jsonResponse({ status: 'paid', has_access: true }, 200, {}, [], origin)
+    return jsonResponse({ status: 'processing', has_access: false }, 202, {}, [], origin)
+  }
+  const active = items.some((payment: Record<string, unknown>) =>
+    ['authorized', 'created'].includes(String(payment.status))
+      && paymentMatchesPurchase(payment, purchase, purchase.razorpay_order_id),
+  )
+  return jsonResponse({
+    status: active ? 'processing' : 'unpaid',
+    has_access: false,
+  }, 200, {}, [], origin)
 }
 
 // ---------------------------------------------------------------------------
@@ -2580,6 +2717,7 @@ serve(async (req) => {
   if (isRoute('post-report') && req.method === 'POST') return handleReportPost(req)
   if (isRoute('post-checkout') && req.method === 'POST') return handlePostCheckout(req)
   if (isRoute('post-verify-payment') && req.method === 'POST') return handleVerifyPostPayment(req)
+  if (isRoute('post-payment-status') && req.method === 'GET') return handlePostPaymentStatus(req, url)
   if (isRoute('public-profile') && req.method === 'GET') return handlePublicProfile(req, url)
   if (isRoute('public-follow') && req.method === 'POST') return handlePublicFollow(req)
   if (isRoute('notifications') && req.method === 'GET') return handleGetNotifications(req)
