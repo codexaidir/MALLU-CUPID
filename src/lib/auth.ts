@@ -24,33 +24,37 @@ export async function apiGet(path: string) {
 }
 
 export async function login(email: string, password: string) {
-  return apiPost('/login', { email, password });
+  return apiPost('/auth/login', { email, password });
 }
 
 export async function logout() {
-  return apiPost('/logout', {});
+  return apiPost('/auth/logout', {});
 }
 
 export async function signup(email: string, password: string, username: string) {
-  return apiPost('/signup', { email, password, username });
+  return apiPost('/auth/signup', { email, password, username });
 }
 
 export async function verifyOtp(token: string) {
-  return apiPost('/verify', { token });
+  return apiPost('/auth/verify', { token });
 }
 
 export async function forgotPassword(email: string) {
-  return apiPost('/forgot', { email });
+  return apiPost('/auth/forgot', { email });
 }
 
 export async function resetPassword(token: string, password: string) {
-  return apiPost('/reset', { token, password });
+  return apiPost('/auth/reset', { token, password });
 }
 
 export async function getSession() {
-  return apiGet('/session');
+  return apiGet('/auth/session');
 }
 
-export async function updateProfile(data: { full_name?: string; bio?: string; avatar_url?: string }) {
-  return apiPost('/profile', data);
+export async function updateProfile(data: {
+  full_name?: string;
+  bio?: string;
+  avatar_url?: string;
+}) {
+  return apiPost('/auth/profile', data);
 }
