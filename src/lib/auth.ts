@@ -76,6 +76,12 @@ export interface Profile {
   facebook_url: string;
   gender: 'Prefer not to say' | 'Male' | 'Female' | 'Transgender';
   is_private: boolean;
+  public_serial: number;
+}
+
+/** Public creator page slug for a profile: <username><5-digit serial>. */
+export function publicProfileSlug(profile: Pick<Profile, 'username' | 'public_serial'>): string {
+  return `${profile.username}${String(profile.public_serial).padStart(5, '0')}`;
 }
 
 export interface ProfileStats {

@@ -2,7 +2,7 @@ import React, { useState, useEffect } from "react";
 import { motion, AnimatePresence } from "motion/react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { LogOut, LayoutDashboard, Users, CreditCard, Heart, Grid, PlaySquare, Play, Menu, X, Bell, ShieldCheck, BadgeCheck, Wallet, MoreVertical, Edit2, Trash2, Plus, Copy, Check, Inbox, Link2, ImagePlus, Radio, TrendingUp, Sparkles, UploadCloud, FileImage, FileVideo, Eye, LockKeyhole, Video, Layers, HelpCircle } from "lucide-react";
-import { getProfile, logout, type CreatorPost, type Profile, type ProfileStats } from "../lib/auth";
+import { getProfile, logout, publicProfileSlug, type CreatorPost, type Profile, type ProfileStats } from "../lib/auth";
 
 export default function DashboardPage() {
   const { username: routeUsername } = useParams<{ username: string }>();
@@ -39,10 +39,12 @@ export default function DashboardPage() {
     navigate("/", { replace: true });
   };
 
+  // The shareable link is the public creator page (/<username><serial>)
+  const publicUrl = profile ? `${window.location.origin}/${publicProfileSlug(profile)}` : '';
+
   const handleCopyLink = () => {
-    if (!profile) return;
-    const url = `${window.location.origin}/${profile.username}`;
-    navigator.clipboard.writeText(url);
+    if (!publicUrl) return;
+    navigator.clipboard.writeText(publicUrl);
     setCopied(true);
     setTimeout(() => setCopied(false), 2000);
   };
@@ -215,8 +217,13 @@ export default function DashboardPage() {
                     {profile?.bio || ''}
                   </p>
                   {profile?.location && <p className="text-zinc-600 mb-1">📍 {profile.location}</p>}
-                  <a href="#" className="text-blue-900 font-semibold inline-flex items-center gap-1 flex-wrap break-all">
-                    <Link2 className="w-4 h-4 shrink-0"/> <span className="break-all">{window.location.host}/{profile?.username || ''}</span>
+                  <a
+                    href={publicUrl || '#'}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="text-blue-900 font-semibold inline-flex items-center gap-1 flex-wrap break-all"
+                  >
+                    <Link2 className="w-4 h-4 shrink-0"/> <span className="break-all">{window.location.host}/{profile ? publicProfileSlug(profile) : ''}</span>
                   </a>
                 </div>
 
@@ -399,7 +406,7 @@ export default function DashboardPage() {
               
               <div className="bg-zinc-50 border border-zinc-200 rounded-xl p-4 flex items-center justify-between gap-4">
                 <span className="text-zinc-700 text-sm truncate flex-1 font-medium select-all">
-                  {`${window.location.origin}/${profile?.username || ''}`}
+                  {publicUrl}
                 </span>
                 <button 
                   onClick={handleCopyLink}

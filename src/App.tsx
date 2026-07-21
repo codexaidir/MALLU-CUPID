@@ -89,11 +89,24 @@ function LegacyRedirect({ page = "" }: { page?: string }) {
  */
 function UsernameRouteSwitch() {
   const { username: slug } = useParams<{ username: string }>();
-  const { user } = useAuth();
+  const { user, loading } = useAuth();
+
+  const looksLikePublicSlug = /^.+\d{5}$/.test(slug || "");
+  if (!looksLikePublicSlug) return <CreatorLayout />;
+
+  // Usernames may themselves end in digits (e.g. obuser1784657181), so wait
+  // for the session before deciding whether this is the user's own dashboard.
+  if (loading) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-zinc-50">
+        <div className="w-7 h-7 border-2 border-rose-500 border-t-transparent rounded-full animate-spin" />
+      </div>
+    );
+  }
+
   const ownUsername = user?.user_metadata?.username;
-  const isPublicSlug = /^.+\d{5}$/.test(slug || "") && slug !== ownUsername;
-  if (isPublicSlug) return <PublicProfilePage />;
-  return <CreatorLayout />;
+  if (slug === ownUsername) return <CreatorLayout />;
+  return <PublicProfilePage />;
 }
 
 export default function App() {

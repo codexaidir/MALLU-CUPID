@@ -802,7 +802,7 @@ const handleGetProfile = async (req: Request) => {
 
   const [res, postsCountRes, followersCountRes, followingCountRes, postsRes] = await Promise.all([
     fetch(
-      `${SUPABASE_URL}/rest/v1/profiles?id=eq.${user.id}&select=id,username,full_name,bio,avatar_url,location,instagram_url,facebook_url,gender,is_private&limit=1`,
+      `${SUPABASE_URL}/rest/v1/profiles?id=eq.${user.id}&select=id,username,full_name,bio,avatar_url,location,instagram_url,facebook_url,gender,is_private,public_serial&limit=1`,
       { headers: { ...authHeaders(true) } },
     ),
     fetch(`${SUPABASE_URL}/rest/v1/posts?creator_id=eq.${user.id}&select=id`, {
