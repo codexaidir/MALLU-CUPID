@@ -2,11 +2,11 @@ import React, { useEffect, useMemo, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { motion, AnimatePresence } from "motion/react";
 import {
-  Download, Grid, Heart, LayoutDashboard, Loader2, LockKeyhole,
+  Download, Grid, Heart, Loader2, LockKeyhole, LogIn, LogOut,
   MessageCircle, MonitorX, Play, PlaySquare, Share, UserPlus, X, Eye,
 } from "lucide-react";
 import {
-  checkoutPost, getPost, getPublicProfile, startConversation, togglePublicFollow,
+  checkoutPost, getPost, getPublicProfile, startConversation, togglePublicFollow, logout,
   type PublicProfileData, type PublicProfilePost,
 } from "../lib/auth";
 import { useAuth } from "../lib/useAuth";
@@ -85,7 +85,7 @@ export default function PublicProfilePage() {
   const mobile = useMobileDevice();
   const navigate = useNavigate();
   const { username: slug = "" } = useParams<{ username: string }>();
-  const { user, loading: authLoading } = useAuth();
+  const { user, loading: authLoading, signOut } = useAuth();
   const [data, setData] = useState<PublicProfileData | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
@@ -94,6 +94,7 @@ export default function PublicProfilePage() {
   const [actionLoading, setActionLoading] = useState(false);
   const [actionError, setActionError] = useState("");
   const [paymentError, setPaymentError] = useState("");
+  const [signingOut, setSigningOut] = useState(false);
   const [installPrompt, setInstallPrompt] = useState<InstallPromptEvent | null>(null);
   const [installHelp, setInstallHelp] = useState(false);
   const [installed, setInstalled] = useState(matchMedia("(display-mode: standalone)").matches);
@@ -185,16 +186,13 @@ export default function PublicProfilePage() {
     Boolean(user?.user_metadata?.username) &&
     String(user.user_metadata.username).toLowerCase() === String(data?.profile.username || "").toLowerCase();
 
-  const openAccount = () => {
-    if (authLoading) return;
-    if (!isLoggedIn) return userLogin();
-    const role = user?.user_metadata?.role || data?.viewer?.role;
-    const creatorUsername = user?.user_metadata?.username;
-    if (role === "creator" && creatorUsername) {
-      navigate(`/${creatorUsername}`);
-      return;
-    }
-    navigate("/user-inbox");
+  const handleLogout = async () => {
+    if (signingOut) return;
+    setSigningOut(true);
+    await logout();
+    await signOut();
+    setSigningOut(false);
+    navigate(`/userlogin?redirect=${encodeURIComponent(slug)}`, { replace: true });
   };
 
   // Server 401s are the final authority: a stale client session must never
@@ -364,15 +362,28 @@ export default function PublicProfilePage() {
           <div className="absolute inset-x-0 top-0 z-20 h-20 bg-gradient-to-b from-black/55 to-transparent" />
           <div className="absolute top-3 left-3 right-3 z-30 flex items-start justify-between text-white">
             <div className="flex gap-4">
-              <button
-                className="flex flex-col items-center text-[11px]"
-                onClick={openAccount}
-              >
-                <div className="w-7 h-7 rounded-full border border-white/80 flex items-center justify-center">
-                  <LayoutDashboard className="w-4 h-4" />
-                </div>
-                <span>{isLoggedIn ? "Account" : "Login"}</span>
-              </button>
+              {isLoggedIn ? (
+                <button
+                  className="flex flex-col items-center text-[11px] disabled:opacity-60"
+                  onClick={handleLogout}
+                  disabled={signingOut || authLoading}
+                >
+                  <div className="w-7 h-7 rounded-full border border-white/80 flex items-center justify-center">
+                    {signingOut ? <Loader2 className="w-4 h-4 animate-spin" /> : <LogOut className="w-4 h-4" />}
+                  </div>
+                  <span>Logout</span>
+                </button>
+              ) : (
+                <button
+                  className="flex flex-col items-center text-[11px]"
+                  onClick={userLogin}
+                >
+                  <div className="w-7 h-7 rounded-full border border-white/80 flex items-center justify-center">
+                    <LogIn className="w-4 h-4" />
+                  </div>
+                  <span>Login</span>
+                </button>
+              )}
               <button
                 onClick={follow}
                 disabled={actionLoading || authLoading}
