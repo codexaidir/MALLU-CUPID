@@ -55,10 +55,24 @@ export async function getSession() {
   return apiGet('/session');
 }
 
+export interface Profile {
+  id: string;
+  username: string;
+  full_name: string | null;
+  bio: string | null;
+  avatar_url: string | null;
+}
+
+export async function getProfile(): Promise<{ profile?: Profile; error?: string }> {
+  return apiGet('/profile');
+}
+
 export async function updateProfile(data: {
   full_name?: string;
   bio?: string;
   avatar_url?: string;
+  avatar_base64?: string;
+  avatar_content_type?: string;
 }) {
   return apiPost('/profile', data);
 }

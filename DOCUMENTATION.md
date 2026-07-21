@@ -74,6 +74,14 @@ The application uses URL-based pagination (React Router) with the following rout
 - Routes accept `/signup` and `/auth/signup` style (base URL: `VITE_AUTH_API_URL=.../functions/v1/auth`).
 - Frontend paths: `/signup`, `/verify`, `/resend`, `/login`, `/session`, `/profile` (no double `/auth`).
 - GoTrue error shape (`msg` / `error_code`) handled for login/forgot/reset.
-- Migrations `001`/`002` applied on remote. Secrets set: AUTH_* keys, CORS for mallucupid.com.
+- Migrations `001`/`002`/`003` applied on remote. Secrets set: AUTH_* keys, CORS for mallucupid.com.
 - Resend OTP email delivery verified (`verification_sent` after valid `AUTH_RESEND_API_KEY`).
+
+## Onboarding / Profile
+
+- `profiles` table stores creator profile: `username`, `full_name` (display name), `bio`, `avatar_url`.
+- Migration `003` creates public `avatars` storage bucket (5MB, jpg/png/webp/gif) and defaults full_name/bio to ''.
+- `GET /profile` returns current user's profile (username auto-fetched from signup — read-only on onboarding).
+- `POST /profile` requires `full_name` and `bio` (mandatory, bio <=400). Optional avatar via `avatar_base64` + `avatar_content_type`; uploaded to `avatars/{userId}/avatar.{ext}` (service role, upsert) and public URL saved to `avatar_url`. Existing `avatar_url` string also accepted.
+- Onboarding page auto-fetches username, prefills existing values, uploads image to storage (not base64 in DB), enforces name+bio.
 

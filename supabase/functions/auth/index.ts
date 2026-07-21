@@ -393,6 +393,80 @@ const handleVerify = async (req: Request) => {
   return jsonResponse({ status: 'user_created', user: { id: userId, email } }, 200, {}, cookies, origin)
 }
 
+const AVATAR_EXT: Record<string, string> = {
+  'image/jpeg': 'jpg',
+  'image/jpg': 'jpg',
+  'image/png': 'png',
+  'image/webp': 'webp',
+  'image/gif': 'gif',
+}
+
+const uploadAvatar = async (
+  userId: string,
+  base64: string,
+  contentType: string,
+): Promise<{ ok: boolean; url?: string; error?: string }> => {
+  const ext = AVATAR_EXT[contentType]
+  if (!ext) return { ok: false, error: 'Unsupported image type' }
+
+  const cleaned = base64.includes(',') ? base64.split(',').pop() as string : base64
+  let bytes: Uint8Array
+  try {
+    const binary = atob(cleaned)
+    bytes = new Uint8Array(binary.length)
+    for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i)
+  } catch {
+    return { ok: false, error: 'Invalid image data' }
+  }
+
+  if (bytes.byteLength > 5 * 1024 * 1024) return { ok: false, error: 'Image exceeds 5MB limit' }
+
+  const path = `${userId}/avatar.${ext}`
+  const uploadRes = await fetch(`${SUPABASE_URL}/storage/v1/object/avatars/${path}`, {
+    method: 'POST',
+    headers: {
+      apikey: SERVICE_ROLE_KEY,
+      Authorization: `Bearer ${SERVICE_ROLE_KEY}`,
+      'Content-Type': contentType,
+      'x-upsert': 'true',
+      'Cache-Control': '3600',
+    },
+    body: bytes,
+  })
+
+  if (!uploadRes.ok) {
+    const err = await uploadRes.text().catch(() => '')
+    console.error('Avatar upload failed:', err)
+    return { ok: false, error: 'Failed to upload avatar' }
+  }
+
+  const url = `${SUPABASE_URL}/storage/v1/object/public/avatars/${path}?v=${Date.now()}`
+  return { ok: true, url }
+}
+
+const handleGetProfile = async (req: Request) => {
+  const origin = req.headers.get('origin')
+  const cookies = serializeCookies(req.headers.get('cookie') || '')
+  const accessToken = cookies['sb-access-token'] ? decodeURIComponent(cookies['sb-access-token']) : ''
+  if (!accessToken) return jsonResponse({ error: 'Unauthorized' }, 401, {}, [], origin)
+
+  const user = await fetchUser(accessToken)
+  if (!user?.id) return jsonResponse({ error: 'Unauthorized' }, 401, {}, [], origin)
+
+  const res = await fetch(
+    `${SUPABASE_URL}/rest/v1/profiles?id=eq.${user.id}&select=id,username,full_name,bio,avatar_url&limit=1`,
+    { headers: { ...authHeaders(true) } },
+  )
+
+  if (!res.ok) return jsonResponse({ error: 'Failed to load profile' }, 500, {}, [], origin)
+
+  const rows = await res.json().catch(() => [])
+  const profile = Array.isArray(rows) && rows.length ? rows[0] : null
+  if (!profile) return jsonResponse({ error: 'Profile not found' }, 404, {}, [], origin)
+
+  return jsonResponse({ profile }, 200, {}, [], origin)
+}
+
 const handleProfile = async (req: Request) => {
   const origin = req.headers.get('origin')
   const cookies = serializeCookies(req.headers.get('cookie') || '')
@@ -403,10 +477,27 @@ const handleProfile = async (req: Request) => {
   if (!user?.id) return jsonResponse({ error: 'Unauthorized' }, 401, {}, [], origin)
 
   const body = await parseJson(req)
-  const patch: Record<string, unknown> = { updated_at: new Date().toISOString() }
-  if (typeof body.full_name === 'string') patch.full_name = body.full_name
-  if (typeof body.bio === 'string') patch.bio = body.bio
-  if (typeof body.avatar_url === 'string') patch.avatar_url = body.avatar_url
+
+  const fullName = typeof body.full_name === 'string' ? body.full_name.trim() : ''
+  const bio = typeof body.bio === 'string' ? body.bio.trim() : ''
+  if (!fullName) return jsonResponse({ error: 'Display name is required' }, 400, {}, [], origin)
+  if (!bio) return jsonResponse({ error: 'Bio is required' }, 400, {}, [], origin)
+  if (bio.length > 400) return jsonResponse({ error: 'Bio must be 400 characters or fewer' }, 400, {}, [], origin)
+
+  const patch: Record<string, unknown> = {
+    full_name: fullName,
+    bio,
+    updated_at: new Date().toISOString(),
+  }
+
+  if (typeof body.avatar_base64 === 'string' && body.avatar_base64) {
+    const contentType = typeof body.avatar_content_type === 'string' ? body.avatar_content_type : 'image/jpeg'
+    const uploaded = await uploadAvatar(user.id, body.avatar_base64, contentType)
+    if (!uploaded.ok) return jsonResponse({ error: uploaded.error || 'Failed to upload avatar' }, 400, {}, [], origin)
+    patch.avatar_url = uploaded.url
+  } else if (typeof body.avatar_url === 'string' && body.avatar_url) {
+    patch.avatar_url = body.avatar_url
+  }
 
   const res = await fetch(`${SUPABASE_URL}/rest/v1/profiles?id=eq.${user.id}`, {
     method: 'PATCH',
@@ -492,6 +583,7 @@ serve(async (req) => {
   if (isRoute('verify') && req.method === 'POST') return handleVerify(req)
   if (isRoute('forgot') && req.method === 'POST') return handleForgot(req)
   if (isRoute('reset') && req.method === 'POST') return handleReset(req)
+  if (isRoute('profile') && req.method === 'GET') return handleGetProfile(req)
   if (isRoute('profile') && req.method === 'POST') return handleProfile(req)
 
   return jsonResponse({ error: 'Not Found' }, 404, {}, [], req.headers.get('origin'))
