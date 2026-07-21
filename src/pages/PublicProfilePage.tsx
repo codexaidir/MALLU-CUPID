@@ -565,7 +565,7 @@ export default function PublicProfilePage() {
                   Build your audience and sell exclusive photos and videos from your own page.
                 </p>
                 <button
-                  onClick={() => navigate("/signup")}
+                  onClick={() => { window.location.href = "https://www.mallucupid.com/"; }}
                   className="w-full h-12 mt-6 rounded-xl bg-white text-rose-500 font-bold"
                 >
                   Start Earning
