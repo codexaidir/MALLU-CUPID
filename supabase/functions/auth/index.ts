@@ -226,22 +226,82 @@ const handleSession = async (req: Request) => {
   return jsonResponse({ user }, 200, {}, cookiesToSet, origin)
 }
 
+// Username rules: 6-25 chars; letters, numbers, underscore, dot, hyphen; no spaces.
+const USERNAME_REGEX = /^[A-Za-z0-9._-]{6,25}$/
+const USERNAME_TAKEN_ERROR = 'Username already taken. Choose a different one.'
+
+const validateUsernameFormat = (username: string): string | null => {
+  if (!username) return 'Username is required'
+  if (/\s/.test(username)) return 'Username cannot contain spaces'
+  if (username.length < 6) return 'Username must be at least 6 characters'
+  if (username.length > 25) return 'Username must be 25 characters or fewer'
+  if (!USERNAME_REGEX.test(username)) return 'Username can only contain letters, numbers, and _ . -'
+  return null
+}
+
+// Escape LIKE wildcards so ilike behaves as case-insensitive equality
+const escapeLike = (value: string) => value.replace(/\\/g, '\\\\').replace(/%/g, '\\%').replace(/_/g, '\\_')
+
+/** Case-insensitive uniqueness check against profiles AND pending (unverified) signups. */
+const isUsernameTaken = async (
+  username: string,
+  opts: { excludeUserId?: string; includePending?: boolean; excludeEmail?: string } = {},
+): Promise<boolean | null> => {
+  const { excludeUserId = '', includePending = true, excludeEmail = '' } = opts
+  const pattern = encodeURIComponent(escapeLike(username))
+  const exclude = excludeUserId ? `&id=neq.${excludeUserId}` : ''
+  const profileRes = await fetch(
+    `${SUPABASE_URL}/rest/v1/profiles?username=ilike.${pattern}${exclude}&select=id&limit=1`,
+    { headers: { ...authHeaders(true) } },
+  )
+  if (!profileRes.ok) return null
+  const profiles = await profileRes.json().catch(() => null)
+  if (!Array.isArray(profiles)) return null
+  if (profiles.length > 0) return true
+
+  if (!includePending) return false
+  const emailFilter = excludeEmail ? `&email=neq.${encodeURIComponent(excludeEmail)}` : ''
+  const pendingRes = await fetch(
+    `${SUPABASE_URL}/rest/v1/email_verifications?purpose=eq.signup&used=eq.false&expires_at=gt.${encodeURIComponent(new Date().toISOString())}${emailFilter}&payload->>username=ilike.${pattern}&select=id&limit=1`,
+    { headers: { ...authHeaders(true) } },
+  )
+  if (!pendingRes.ok) return false
+  const pending = await pendingRes.json().catch(() => [])
+  return Array.isArray(pending) && pending.length > 0
+}
+
+const handleUsernameCheck = async (req: Request, url: URL) => {
+  const origin = req.headers.get('origin')
+  const username = (url.searchParams.get('u') || '').trim()
+
+  const formatError = validateUsernameFormat(username)
+  if (formatError) {
+    return jsonResponse({ available: false, reason: 'invalid', error: formatError }, 200, {}, [], origin)
+  }
+
+  const taken = await isUsernameTaken(username)
+  if (taken === null) return jsonResponse({ error: 'Failed to check username' }, 500, {}, [], origin)
+  if (taken) {
+    return jsonResponse({ available: false, reason: 'taken', error: USERNAME_TAKEN_ERROR }, 200, {}, [], origin)
+  }
+  return jsonResponse({ available: true }, 200, {}, [], origin)
+}
+
 const handleSignup = async (req: Request) => {
   const origin = req.headers.get('origin')
-  const { email, password, username } = await parseJson(req)
+  const body = await parseJson(req)
+  const email = typeof body.email === 'string' ? body.email.trim() : ''
+  const password = typeof body.password === 'string' ? body.password : ''
+  const username = typeof body.username === 'string' ? body.username.trim().toLowerCase() : ''
   if (!email || !password || !username) return jsonResponse({ error: 'Missing fields' }, 400, {}, [], origin)
-  if (!/^[^\s]{6,25}$/.test(username)) return jsonResponse({ error: 'Invalid username format' }, 400, {}, [], origin)
 
-  const usernameCheck = await fetch(`${SUPABASE_URL}/rest/v1/profiles?username=eq.${encodeURIComponent(username)}&select=id&limit=1`, {
-    headers: {
-      ...authHeaders(true),
-    },
-  })
+  const formatError = validateUsernameFormat(username)
+  if (formatError) return jsonResponse({ error: formatError }, 400, {}, [], origin)
 
-  if (!usernameCheck.ok) return jsonResponse({ error: 'Failed to validate username' }, 500, {}, [], origin)
-
-  const existing = await usernameCheck.json()
-  if (Array.isArray(existing) && existing.length > 0) return jsonResponse({ error: 'Username taken' }, 409, {}, [], origin)
+  // Re-signup with the same email keeps the same username reserved for that email
+  const taken = await isUsernameTaken(username, { excludeEmail: email })
+  if (taken === null) return jsonResponse({ error: 'Failed to validate username' }, 500, {}, [], origin)
+  if (taken) return jsonResponse({ error: USERNAME_TAKEN_ERROR }, 409, {}, [], origin)
 
   // Invalidate any prior unused signup OTPs for this email
   await fetch(
@@ -339,6 +399,14 @@ const handleVerify = async (req: Request) => {
 
   if (!email || !username || !password) return jsonResponse({ error: 'Verification payload invalid' }, 500, {}, [], origin)
 
+  // Final backend check before account creation: the username may have been
+  // claimed while this signup was waiting for OTP verification.
+  const formatError = validateUsernameFormat(username)
+  if (formatError) return jsonResponse({ error: formatError }, 400, {}, [], origin)
+  const takenNow = await isUsernameTaken(username, { includePending: false })
+  if (takenNow === null) return jsonResponse({ error: 'Failed to validate username' }, 500, {}, [], origin)
+  if (takenNow) return jsonResponse({ error: USERNAME_TAKEN_ERROR }, 409, {}, [], origin)
+
   const userRes = await fetch(`${SUPABASE_URL}/auth/v1/admin/users`, {
     method: 'POST',
     headers: {
@@ -368,6 +436,15 @@ const handleVerify = async (req: Request) => {
   if (!profileRes.ok) {
     const profileErr = await profileRes.text().catch(() => '')
     console.error('Failed to create profile:', profileErr)
+    // DB-level unique index is the last line of defense against duplicate usernames.
+    // Roll back the auth user so the email is not left orphaned.
+    await fetch(`${SUPABASE_URL}/auth/v1/admin/users/${userId}`, {
+      method: 'DELETE',
+      headers: { ...authHeaders(true) },
+    }).catch(() => {})
+    if (profileErr.includes('23505') || profileErr.toLowerCase().includes('duplicate')) {
+      return jsonResponse({ error: USERNAME_TAKEN_ERROR }, 409, {}, [], origin)
+    }
     return jsonResponse({ error: 'User created but profile failed' }, 500, {}, [], origin)
   }
 
@@ -707,8 +784,9 @@ const handleProfile = async (req: Request) => {
   if (!bio) return jsonResponse({ error: 'Bio is required' }, 400, {}, [], origin)
   if (fullName.length > 100) return jsonResponse({ error: 'Display name must be 100 characters or fewer' }, 400, {}, [], origin)
   if (bio.length > 400) return jsonResponse({ error: 'Bio must be 400 characters or fewer' }, 400, {}, [], origin)
-  if (username && !/^[^\s]{6,25}$/.test(username)) {
-    return jsonResponse({ error: 'Username must be 6-25 characters without spaces' }, 400, {}, [], origin)
+  if (username) {
+    const usernameFormatError = validateUsernameFormat(username)
+    if (usernameFormatError) return jsonResponse({ error: usernameFormatError }, 400, {}, [], origin)
   }
   if (location.length > 100) return jsonResponse({ error: 'Location must be 100 characters or fewer' }, 400, {}, [], origin)
   if (!['Prefer not to say', 'Male', 'Female', 'Transgender'].includes(gender)) {
@@ -725,15 +803,9 @@ const handleProfile = async (req: Request) => {
   }
 
   if (username) {
-    const usernameCheck = await fetch(
-      `${SUPABASE_URL}/rest/v1/profiles?username=eq.${encodeURIComponent(username)}&id=neq.${user.id}&select=id&limit=1`,
-      { headers: { ...authHeaders(true) } },
-    )
-    if (!usernameCheck.ok) return jsonResponse({ error: 'Failed to validate username' }, 500, {}, [], origin)
-    const existing = await usernameCheck.json().catch(() => [])
-    if (Array.isArray(existing) && existing.length) {
-      return jsonResponse({ error: 'Username is already taken' }, 409, {}, [], origin)
-    }
+    const taken = await isUsernameTaken(username, { excludeUserId: user.id })
+    if (taken === null) return jsonResponse({ error: 'Failed to validate username' }, 500, {}, [], origin)
+    if (taken) return jsonResponse({ error: USERNAME_TAKEN_ERROR }, 409, {}, [], origin)
   }
 
   const patch: Record<string, unknown> = {
@@ -769,6 +841,9 @@ const handleProfile = async (req: Request) => {
   if (!res.ok) {
     const err = await res.text().catch(() => '')
     console.error('Profile update failed:', err)
+    if (err.includes('23505') || err.toLowerCase().includes('duplicate')) {
+      return jsonResponse({ error: USERNAME_TAKEN_ERROR }, 409, {}, [], origin)
+    }
     return jsonResponse({ error: 'Failed to update profile' }, 500, {}, [], origin)
   }
 
@@ -1900,6 +1975,7 @@ serve(async (req) => {
   if (isRoute('logout') && req.method === 'POST') return handleLogout(req)
   if (isRoute('session') && req.method === 'GET') return handleSession(req)
   if (isRoute('signup') && req.method === 'POST') return handleSignup(req)
+  if (isRoute('username-check') && req.method === 'GET') return handleUsernameCheck(req, url)
   if (isRoute('resend') && req.method === 'POST') return handleResend(req)
   if (isRoute('verify') && req.method === 'POST') return handleVerify(req)
   if (isRoute('forgot') && req.method === 'POST') return handleForgot(req)

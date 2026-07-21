@@ -35,6 +35,16 @@ export async function signup(email: string, password: string, username: string) 
   return apiPost('/signup', { email, password, username });
 }
 
+export const USERNAME_REGEX = /^[A-Za-z0-9._-]{6,25}$/;
+
+export async function checkUsername(username: string): Promise<{
+  available?: boolean;
+  reason?: 'invalid' | 'taken';
+  error?: string;
+}> {
+  return apiGet(`/username-check?u=${encodeURIComponent(username)}`);
+}
+
 export async function verifyOtp(token: string) {
   return apiPost('/verify', { token });
 }

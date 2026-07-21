@@ -14,11 +14,12 @@ The application uses URL-based pagination (React Router) with the following rout
   - Login action -> navigates to `/dashboard`.
 - **`/signup` (Sign Up Page)**
   - Requires `Username`, `Email`, and `Password` (with eye icon).
-  - Implements an Instagram-model username setup:
-    - Real-time debounced validation (checks format: minimum 6 chars, maximum 25, no spaces allowed, alphanumeric and icons/special chars permitted).
-    - Simulates availability check (e.g., 'admin', 'root', 'mallucupid_creator', 'test' are taken).
-    - Visual feedback with spinners and check/cross icons.
-    - Disables submit until a valid and available username is chosen.
+  - Real-time username validation (debounced ~400ms) against the backend — never simulated:
+    - Format: 6–25 characters; letters, numbers, `_` `.` `-` only; spaces forbidden.
+    - `GET /username-check?u=` returns `{ available: true }` or `{ available: false, reason: 'taken'|'invalid', error }` from the DB (profiles + pending unverified signups), case-insensitive.
+    - Taken message: **"Username already taken. Choose a different one."**
+    - Username is never marked available until the backend confirms uniqueness. Sign Up stays disabled until then.
+  - `POST /signup` and OTP `POST /verify` re-validate format + uniqueness before creating the auth user / profile. Migration `009` adds a case-insensitive unique index on `lower(username)` and a format CHECK constraint as the final DB-level defense.
   - Submit action -> navigates to `/verify-otp`.
 - **`/verify-otp` (OTP Verification Page)**
   - 6-digit OTP input.

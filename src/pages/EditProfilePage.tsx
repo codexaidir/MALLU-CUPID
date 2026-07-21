@@ -1,7 +1,7 @@
 import React, { useEffect, useRef, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { AlertCircle, ArrowLeft, Camera, Loader2 } from "lucide-react";
-import { getProfile, updateProfile, type Profile } from "../lib/auth";
+import { getProfile, updateProfile, USERNAME_REGEX, type Profile } from "../lib/auth";
 
 const ACCEPTED_TYPES = ["image/jpeg", "image/jpg", "image/png", "image/webp", "image/gif"];
 const MAX_AVATAR_SIZE = 5 * 1024 * 1024;
@@ -87,8 +87,8 @@ export default function EditProfilePage() {
   const handleEditProfileSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError('');
-    if (!/^[^\s]{6,25}$/.test(editForm.username)) {
-      setError('Username must be 6-25 characters without spaces.');
+    if (!USERNAME_REGEX.test(editForm.username)) {
+      setError('Username must be 6-25 characters using only letters, numbers, and _ . - (no spaces).');
       return;
     }
     if (!editForm.name.trim() || !editForm.bio.trim()) {

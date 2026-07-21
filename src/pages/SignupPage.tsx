@@ -2,49 +2,71 @@ import React, { useState, useEffect } from "react";
 import { motion, AnimatePresence } from "motion/react";
 import { Eye, EyeOff, Mail, Lock, User, ArrowRight, CheckCircle2, XCircle, Loader2, AlertCircle } from "lucide-react";
 import { Link, useNavigate } from "react-router-dom";
-import { signup } from "../lib/auth";
+import { signup, checkUsername, USERNAME_REGEX } from "../lib/auth";
 
 export default function SignupPage() {
   const [showPassword, setShowPassword] = useState(false);
   const [username, setUsername] = useState("");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
-  const [usernameStatus, setUsernameStatus] = useState<'idle' | 'validating' | 'available' | 'taken' | 'invalid'>('idle');
-  
+  const [usernameStatus, setUsernameStatus] = useState<'idle' | 'validating' | 'available' | 'taken' | 'invalid' | 'error'>('idle');
+  const [usernameMessage, setUsernameMessage] = useState("");
+
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
 
   const navigate = useNavigate();
 
-  // Simulated API call for checking username availability
+  const localFormatError = (value: string): string | null => {
+    if (value.length < 6) return 'Username must be at least 6 characters.';
+    if (value.length > 25) return 'Username must be 25 characters or fewer.';
+    if (!USERNAME_REGEX.test(value)) return 'Only letters, numbers, and _ . - are allowed. No spaces.';
+    return null;
+  };
+
+  // Real-time availability check against the backend (debounced).
+  // A username is never shown as available until the server confirms it.
   useEffect(() => {
     if (!username) {
       setUsernameStatus('idle');
+      setUsernameMessage("");
       return;
     }
 
-    // Basic format validation: Min 6 chars, Max 25 chars, alphanumeric and special characters/icons allowed (no spaces).
-    const isValidFormat = /^[^\s]{6,25}$/.test(username);
-    
-    if (!isValidFormat) {
+    const formatError = localFormatError(username);
+    if (formatError) {
       setUsernameStatus('invalid');
+      setUsernameMessage(formatError);
       return;
     }
 
     setUsernameStatus('validating');
+    setUsernameMessage("");
+    let cancelled = false;
 
-    const timer = setTimeout(() => {
-      // Simulate some taken usernames
-      const takenUsernames = ["admin", "root", "mallucupid_creator", "test"];
-      if (takenUsernames.includes(username)) {
-        setUsernameStatus('taken');
-      } else {
+    const timer = setTimeout(async () => {
+      const response = await checkUsername(username);
+      if (cancelled) return;
+      if (response.available === true) {
         setUsernameStatus('available');
+        setUsernameMessage('This username is available.');
+      } else if (response.reason === 'taken') {
+        setUsernameStatus('taken');
+        setUsernameMessage(response.error || 'Username already taken. Choose a different one.');
+      } else if (response.reason === 'invalid') {
+        setUsernameStatus('invalid');
+        setUsernameMessage(response.error || 'Invalid username.');
+      } else {
+        setUsernameStatus('error');
+        setUsernameMessage('Could not check username. Check your connection and try again.');
       }
-    }, 600);
+    }, 400);
 
-    return () => clearTimeout(timer);
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
   }, [username]);
 
   const handleUsernameChange = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -75,6 +97,11 @@ export default function SignupPage() {
       setIsLoading(false);
       if (response?.error) {
         setError(response.error || 'Signup failed');
+        // The backend is the source of truth: reflect a taken username inline too
+        if (typeof response.error === 'string' && response.error.toLowerCase().includes('taken')) {
+          setUsernameStatus('taken');
+          setUsernameMessage(response.error);
+        }
         return;
       }
       setSuccess('Account created! Check your email to verify.');
@@ -144,14 +171,14 @@ export default function SignupPage() {
               {(usernameStatus === 'invalid' || usernameStatus === 'taken') && <XCircle className="w-5 h-5 text-red-500" />}
             </div>
           </div>
-          {usernameStatus === 'invalid' && (
-            <p className="text-xs text-red-500 mt-1">Username must be 6-25 characters and cannot contain spaces.</p>
-          )}
-          {usernameStatus === 'taken' && (
-            <p className="text-xs text-red-500 mt-1">This username is already taken. Please choose another one.</p>
+          {(usernameStatus === 'invalid' || usernameStatus === 'taken' || usernameStatus === 'error') && usernameMessage && (
+            <p className="text-xs text-red-500 mt-1">{usernameMessage}</p>
           )}
           {usernameStatus === 'available' && (
-            <p className="text-xs text-emerald-600 mt-1">This username is available.</p>
+            <p className="text-xs text-emerald-600 mt-1">{usernameMessage}</p>
+          )}
+          {usernameStatus === 'validating' && (
+            <p className="text-xs text-zinc-400 mt-1">Checking availability…</p>
           )}
         </div>
 
