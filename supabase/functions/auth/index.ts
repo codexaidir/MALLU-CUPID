@@ -341,10 +341,11 @@ const sendResendEmail = async (opts: {
 const notifyCreatorByEmail = async (opts: {
   creatorId: string
   actorId: string
-  kind: 'follow' | 'purchase'
+  kind: 'follow' | 'purchase' | 'exclusive'
   amount?: number
   currency?: string
   postPublicId?: string
+  roomName?: string
 }) => {
   try {
     if (!opts.creatorId || !opts.actorId || opts.creatorId === opts.actorId) return
@@ -375,6 +376,22 @@ const notifyCreatorByEmail = async (opts: {
     const amountLabel = typeof opts.amount === 'number'
       ? `₹${Number(opts.amount).toFixed(2)}`
       : 'a paid amount'
+
+    if (opts.kind === 'exclusive') {
+      const roomLabel = opts.roomName ? `"${opts.roomName}"` : 'an exclusive room'
+      await sendResendEmail({
+        to,
+        subject: `@${actorName} entered your exclusive room`,
+        html: buildCreatorNotificationHtml({
+          creatorName,
+          headline: 'Exclusive room entry',
+          message: `@${actorName} paid ${amountLabel}/month and entered ${roomLabel}.`,
+          detail: 'Check your wallet for the entry fee credit.',
+        }),
+      })
+      return
+    }
+
     await sendResendEmail({
       to,
       subject: `@${actorName} unlocked your paid post`,
@@ -1787,8 +1804,8 @@ const handleGetWallet = async (req: Request) => {
   const user = await requireRole(req, 'creator')
   if (!user?.id) return jsonResponse({ error: 'Unauthorized' }, 401, {}, [], origin)
 
-  // Lifetime = all paid sales. Available = paid ≥24h ago − pending/accepted/paid withdrawals.
-  const [lifetimeRes, withdrawableRes, salesRes, wdRes, countRes, payoutRes, feeBpsRes] = await Promise.all([
+  // Lifetime = all paid sales (posts + exclusive). Available = paid ≥24h ago − withdrawals.
+  const [lifetimeRes, withdrawableRes, salesRes, exclusiveSalesRes, wdRes, countRes, exclusiveCountRes, payoutRes, feeBpsRes] = await Promise.all([
     fetch(`${SUPABASE_URL}/rest/v1/rpc/wallet_lifetime_paise`, {
       method: 'POST',
       headers: { ...authHeaders(true) },
@@ -1804,11 +1821,19 @@ const handleGetWallet = async (req: Request) => {
       { headers: { ...authHeaders(true) } },
     ),
     fetch(
+      `${SUPABASE_URL}/rest/v1/exclusive_room_subscriptions?creator_id=eq.${user.id}&status=eq.paid&select=id,amount_paise,paid_at,room_id,user_id&order=paid_at.desc&limit=100`,
+      { headers: { ...authHeaders(true) } },
+    ),
+    fetch(
       `${SUPABASE_URL}/rest/v1/wallet_withdrawals?creator_id=eq.${user.id}&select=id,amount_paise,platform_fee_paise,net_payout_paise,fee_bps,status,account_holder,account_number_last4,ifsc,upi_id,created_at,processed_at,transfer_txn_id&order=created_at.desc&limit=50`,
       { headers: { ...authHeaders(true) } },
     ),
     fetch(
       `${SUPABASE_URL}/rest/v1/post_purchases?creator_id=eq.${user.id}&status=eq.paid&select=id`,
+      { method: 'HEAD', headers: { ...authHeaders(true), Prefer: 'count=exact', Range: '0-0' } },
+    ),
+    fetch(
+      `${SUPABASE_URL}/rest/v1/exclusive_room_subscriptions?creator_id=eq.${user.id}&status=eq.paid&select=id`,
       { method: 'HEAD', headers: { ...authHeaders(true), Prefer: 'count=exact', Range: '0-0' } },
     ),
     fetch(
@@ -1825,6 +1850,8 @@ const handleGetWallet = async (req: Request) => {
   if (!salesRes.ok) return jsonResponse({ error: 'Failed to load sales' }, 500, {}, [], origin)
   const salesRaw = await salesRes.json().catch(() => [])
   const salesRows = Array.isArray(salesRaw) ? salesRaw : []
+  const exclusiveRaw = exclusiveSalesRes.ok ? await exclusiveSalesRes.json().catch(() => []) : []
+  const exclusiveRows = Array.isArray(exclusiveRaw) ? exclusiveRaw : []
   const withdrawals = wdRes.ok ? await wdRes.json().catch(() => []) : []
 
   let lifetimePaise = Number(lifetimeRes.ok ? await lifetimeRes.json().catch(() => 0) : 0) || 0
@@ -1833,6 +1860,7 @@ const handleGetWallet = async (req: Request) => {
     for (const sale of salesRows) {
       lifetimePaise += Number(sale.amount_paise || Math.round(Number(sale.amount || 0) * 100))
     }
+    for (const sale of exclusiveRows) lifetimePaise += Number(sale.amount_paise || 0)
   }
   if (!withdrawableRes.ok) withdrawablePaise = lifetimePaise
   let reservedPaise = 0
@@ -1843,10 +1871,12 @@ const handleGetWallet = async (req: Request) => {
   }
   const availablePaise = Math.max(0, withdrawablePaise - reservedPaise)
   const heldPaise = Math.max(0, lifetimePaise - withdrawablePaise)
-  const salesCountHeader = (countRes.headers.get('content-range') || '').split('/')[1]
-  const salesCount = salesCountHeader && salesCountHeader !== '*'
-    ? Number(salesCountHeader) || salesRows.length
-    : salesRows.length
+  const readCountHdr = (response: Response) => {
+    const total = (response.headers.get('content-range') || '').split('/')[1]
+    return total && total !== '*' ? Number(total) || 0 : 0
+  }
+  const salesCount = (countRes.ok ? readCountHdr(countRes) : salesRows.length)
+    + (exclusiveCountRes.ok ? readCountHdr(exclusiveCountRes) : exclusiveRows.length)
 
   const postIds = [...new Set(salesRows.map((s: { post_id: string }) => s.post_id).filter(Boolean))]
   let postMap: Record<string, { public_id: string; caption: string }> = {}
@@ -1861,23 +1891,53 @@ const handleGetWallet = async (req: Request) => {
     }
   }
 
-  const sales = salesRows.map((s: Record<string, unknown>) => {
+  const roomIds = [...new Set(exclusiveRows.map((s: { room_id: string }) => s.room_id).filter(Boolean))]
+  let roomMap: Record<string, string> = {}
+  if (roomIds.length) {
+    const roomsRes = await fetch(
+      `${SUPABASE_URL}/rest/v1/exclusive_rooms?id=in.(${roomIds.join(',')})&select=id,name`,
+      { headers: { ...authHeaders(true) } },
+    )
+    for (const r of roomsRes.ok ? await roomsRes.json().catch(() => []) : []) {
+      roomMap[r.id] = r.name || 'Exclusive'
+    }
+  }
+
+  const postSales = salesRows.map((s: Record<string, unknown>) => {
     const paise = Number(s.amount_paise || Math.round(Number(s.amount || 0) * 100))
     const post = postMap[String(s.post_id)] || { public_id: '', caption: '' }
     const paidAt = s.paid_at ? new Date(String(s.paid_at)).getTime() : 0
-    const unlocksAt = paidAt ? new Date(paidAt + 24 * 60 * 60 * 1000).toISOString() : null
-    const withdrawable = paidAt > 0 && Date.now() >= paidAt + 24 * 60 * 60 * 1000
     return {
       id: s.id,
+      kind: 'post',
       amount: paise / 100,
       amount_paise: paise,
       paid_at: s.paid_at,
-      withdrawable,
-      unlocks_at: unlocksAt,
+      withdrawable: paidAt > 0 && Date.now() >= paidAt + 24 * 60 * 60 * 1000,
+      unlocks_at: paidAt ? new Date(paidAt + 24 * 60 * 60 * 1000).toISOString() : null,
       post_public_id: post.public_id,
-      caption: post.caption,
+      caption: post.caption || 'Post unlock',
     }
   })
+  const exclusiveSalesMapped = exclusiveRows.map((s: Record<string, unknown>) => {
+    const paise = Number(s.amount_paise || 0)
+    const paidAt = s.paid_at ? new Date(String(s.paid_at)).getTime() : 0
+    const roomName = roomMap[String(s.room_id)] || 'Exclusive room'
+    return {
+      id: s.id,
+      kind: 'exclusive',
+      amount: paise / 100,
+      amount_paise: paise,
+      paid_at: s.paid_at,
+      withdrawable: paidAt > 0 && Date.now() >= paidAt + 24 * 60 * 60 * 1000,
+      unlocks_at: paidAt ? new Date(paidAt + 24 * 60 * 60 * 1000).toISOString() : null,
+      post_public_id: '',
+      caption: `${roomName} · monthly entry`,
+    }
+  })
+  const sales = [...postSales, ...exclusiveSalesMapped]
+    .sort((x, y) => new Date(String(y.paid_at || 0)).getTime() - new Date(String(x.paid_at || 0)).getTime())
+    .slice(0, 100)
 
   const payoutRows = payoutRes.ok ? await payoutRes.json().catch(() => []) : []
   const payout = Array.isArray(payoutRows) && payoutRows.length ? payoutRows[0] : null
@@ -2668,29 +2728,94 @@ const handleAdminPayments = async (req: Request) => {
     }
   }
 
+  const exRes = await fetch(
+    `${SUPABASE_URL}/rest/v1/exclusive_room_subscriptions?status=eq.paid&select=id,amount_paise,paid_at,razorpay_order_id,razorpay_payment_id,room_id,user_id,creator_id&order=paid_at.desc&limit=300`,
+    { headers: { ...authHeaders(true) } },
+  )
+  const exList = exRes.ok ? await exRes.json().catch(() => []) : []
+  const exclusiveList = Array.isArray(exList) ? exList : []
+  const roomIdsAdmin = [...new Set(exclusiveList.map((r) => r.room_id).filter(Boolean))]
+  const roomsAdmin: Record<string, string> = {}
+  const moreUserIds = [...new Set(exclusiveList.flatMap((r) => [r.user_id, r.creator_id]).filter(Boolean))]
+  if (roomIdsAdmin.length) {
+    const roomsRes = await fetch(
+      `${SUPABASE_URL}/rest/v1/exclusive_rooms?id=in.(${roomIdsAdmin.join(',')})&select=id,name`,
+      { headers: { ...authHeaders(true) } },
+    )
+    for (const r of roomsRes.ok ? await roomsRes.json().catch(() => []) : []) {
+      roomsAdmin[r.id] = r.name || 'Exclusive'
+    }
+  }
+  const missingUsers = moreUserIds.filter((id) => !profiles[id] && !accounts[id])
+  if (missingUsers.length) {
+    const [profileRes2, accountRes2] = await Promise.all([
+      fetch(
+        `${SUPABASE_URL}/rest/v1/profiles?id=in.(${missingUsers.join(',')})&select=id,username`,
+        { headers: { ...authHeaders(true) } },
+      ),
+      fetch(
+        `${SUPABASE_URL}/rest/v1/user_accounts?id=in.(${missingUsers.join(',')})&select=id,name,email`,
+        { headers: { ...authHeaders(true) } },
+      ),
+    ])
+    for (const p of profileRes2.ok ? await profileRes2.json().catch(() => []) : []) {
+      profiles[p.id] = p.username || ''
+    }
+    for (const a of accountRes2.ok ? await accountRes2.json().catch(() => []) : []) {
+      accounts[a.id] = a.name || a.email || ''
+    }
+  }
+
+  const postPayments = list.map((r) => {
+    const paise = Number(r.amount_paise || Math.round(Number(r.amount || 0) * 100))
+    const paidAt = r.paid_at ? new Date(String(r.paid_at)).getTime() : 0
+    return {
+      id: r.id,
+      kind: 'post',
+      amount: paise / 100,
+      amount_paise: paise,
+      currency: r.currency || 'INR',
+      paid_at: r.paid_at,
+      withdrawable: paidAt > 0 && Date.now() >= paidAt + 24 * 60 * 60 * 1000,
+      unlocks_at: paidAt ? new Date(paidAt + 24 * 60 * 60 * 1000).toISOString() : null,
+      razorpay_order_id: r.razorpay_order_id || '',
+      razorpay_payment_id: r.razorpay_payment_id || '',
+      post_public_id: posts[r.post_id]?.public_id || '',
+      post_caption: posts[r.post_id]?.caption || '',
+      buyer_name: accounts[r.user_id] || profiles[r.user_id] || '',
+      creator_username: profiles[r.creator_id] || '',
+      creator_id: r.creator_id,
+    }
+  })
+  const exclusivePayments = exclusiveList.map((r) => {
+    const paise = Number(r.amount_paise || 0)
+    const paidAt = r.paid_at ? new Date(String(r.paid_at)).getTime() : 0
+    return {
+      id: r.id,
+      kind: 'exclusive',
+      amount: paise / 100,
+      amount_paise: paise,
+      currency: 'INR',
+      paid_at: r.paid_at,
+      withdrawable: paidAt > 0 && Date.now() >= paidAt + 24 * 60 * 60 * 1000,
+      unlocks_at: paidAt ? new Date(paidAt + 24 * 60 * 60 * 1000).toISOString() : null,
+      razorpay_order_id: r.razorpay_order_id || '',
+      razorpay_payment_id: r.razorpay_payment_id || '',
+      post_public_id: '',
+      post_caption: `${roomsAdmin[r.room_id] || 'Exclusive'} · monthly entry`,
+      buyer_name: accounts[r.user_id] || profiles[r.user_id] || '',
+      creator_username: profiles[r.creator_id] || '',
+      creator_id: r.creator_id,
+    }
+  })
+
   return jsonResponse({
-    payments: list.map((r) => {
-      const paise = Number(r.amount_paise || Math.round(Number(r.amount || 0) * 100))
-      const paidAt = r.paid_at ? new Date(String(r.paid_at)).getTime() : 0
-      return {
-        id: r.id,
-        amount: paise / 100,
-        amount_paise: paise,
-        currency: r.currency || 'INR',
-        paid_at: r.paid_at,
-        withdrawable: paidAt > 0 && Date.now() >= paidAt + 24 * 60 * 60 * 1000,
-        unlocks_at: paidAt ? new Date(paidAt + 24 * 60 * 60 * 1000).toISOString() : null,
-        razorpay_order_id: r.razorpay_order_id || '',
-        razorpay_payment_id: r.razorpay_payment_id || '',
-        post_public_id: posts[r.post_id]?.public_id || '',
-        post_caption: posts[r.post_id]?.caption || '',
-        buyer_name: accounts[r.user_id] || profiles[r.user_id] || '',
-        creator_username: profiles[r.creator_id] || '',
-        creator_id: r.creator_id,
-      }
-    }),
+    payments: [...postPayments, ...exclusivePayments]
+      .sort((x, y) => new Date(String(y.paid_at || 0)).getTime() - new Date(String(x.paid_at || 0)).getTime())
+      .slice(0, 300),
   }, 200, {}, [], origin)
 }
+
 
 const handleAdminSettlements = async (req: Request) => {
   const origin = req.headers.get('origin')
@@ -3426,6 +3551,19 @@ const paymentMatchesPurchase = (
     && Number(payment.amount) === expectedPaise
 }
 
+const paymentMatchesExclusiveSub = (
+  payment: Record<string, unknown>,
+  sub: Record<string, unknown>,
+  orderId: string,
+) => {
+  const expectedPaise = Number(sub.amount_paise || 0)
+  return payment.order_id === orderId
+    && payment.currency === 'INR'
+    && Number(payment.amount) === expectedPaise
+    && Number.isFinite(expectedPaise)
+    && expectedPaise >= 1000
+}
+
 const handleVerifyPostPayment = async (req: Request) => {
   const origin = req.headers.get('origin')
   const user = await requireUser(req)
@@ -3535,6 +3673,15 @@ const handleRazorpayWebhook = async (req: Request) => {
     const sub = Array.isArray(subRows) && subRows.length ? subRows[0] : null
     if (!sub) return jsonResponse({ status: 'ignored', reason: 'unknown order' }, 200, {}, [], origin)
     if (sub.status === 'paid') return jsonResponse({ status: 'already_paid' }, 200, {}, [], origin)
+    if (sub.status !== 'created') return jsonResponse({ status: 'ignored', reason: 'sub not pending' }, 200, {}, [], origin)
+
+    let livePayment = payment
+    if (!livePayment || !paymentMatchesExclusiveSub(livePayment, sub, orderId) || livePayment.status !== 'captured') {
+      livePayment = await razorpayGet(`/payments/${encodeURIComponent(paymentId)}`) || undefined
+    }
+    if (!livePayment || !paymentMatchesExclusiveSub(livePayment, sub, orderId) || livePayment.status !== 'captured') {
+      return jsonResponse({ status: 'ignored', reason: 'exclusive payment mismatch' }, 200, {}, [], origin)
+    }
     const recorded = await recordExclusiveSubscriptionPaid(sub, paymentId)
     return jsonResponse({ status: recorded.ok ? 'paid' : 'pending' }, recorded.ok ? 200 : 503, {}, [], origin)
   }
@@ -4447,11 +4594,13 @@ const recordExclusiveSubscriptionPaid = async (
     actor_id: sub.user_id as string,
     type: 'purchase',
   }).catch(() => {})
+  const room = await fetchExclusiveRoomById(String(sub.room_id || ''))
   notifyCreatorByEmail({
     creatorId: sub.creator_id as string,
     actorId: sub.user_id as string,
-    kind: 'purchase',
+    kind: 'exclusive',
     amount: Number(sub.amount_paise || 0) / 100,
+    roomName: room?.name || '',
   }).catch(() => {})
   return { ok: true as const, expires_at: expiresAt.toISOString() }
 }
@@ -4627,12 +4776,24 @@ const handleGetExclusiveRoom = async (req: Request, url: URL) => {
     expiresAt = Array.isArray(subs) && subs[0]?.expires_at ? subs[0].expires_at : null
   }
 
-  const postsRes = await fetch(
-    `${SUPABASE_URL}/rest/v1/exclusive_room_posts?room_id=eq.${roomId}&select=*&order=created_at.desc&limit=100`,
-    { headers: { ...authHeaders(true) } },
-  )
-  const postRows = postsRes.ok ? await postsRes.json().catch(() => []) : []
-  const posts = await decorateExclusivePosts(Array.isArray(postRows) ? postRows : [], hasAccess)
+  let posts: unknown[] = []
+  let postCount = 0
+  if (hasAccess) {
+    const postsRes = await fetch(
+      `${SUPABASE_URL}/rest/v1/exclusive_room_posts?room_id=eq.${roomId}&select=*&order=created_at.desc&limit=100`,
+      { headers: { ...authHeaders(true) } },
+    )
+    const postRows = postsRes.ok ? await postsRes.json().catch(() => []) : []
+    posts = await decorateExclusivePosts(Array.isArray(postRows) ? postRows : [], true)
+    postCount = posts.length
+  } else {
+    const countRes = await fetch(
+      `${SUPABASE_URL}/rest/v1/exclusive_room_posts?room_id=eq.${roomId}&select=id`,
+      { method: 'HEAD', headers: { ...authHeaders(true), Prefer: 'count=exact', Range: '0-0' } },
+    )
+    const total = (countRes.headers.get('content-range') || '').split('/')[1]
+    postCount = total && total !== '*' ? Number(total) || 0 : 0
+  }
 
   return jsonResponse({
     room: await publicExclusiveRoom(room, {
@@ -4640,8 +4801,10 @@ const handleGetExclusiveRoom = async (req: Request, url: URL) => {
       expires_at: expiresAt,
       creator_slug: slug,
       creator_id: room.creator_id,
+      post_count: postCount,
     }),
     posts,
+    post_count: postCount,
     has_access: hasAccess,
     is_owner: isOwner,
   }, 200, {}, [], origin)
@@ -4816,17 +4979,37 @@ const handleExclusiveRoomCheckout = async (req: Request) => {
   if (pending?.razorpay_order_id) {
     const payments = await razorpayGet(`/orders/${encodeURIComponent(pending.razorpay_order_id)}/payments`)
     const items = Array.isArray(payments?.items) ? payments.items : []
-    const captured = items.find((p: Record<string, unknown>) => p.status === 'captured')
+    const captured = items.find((p: Record<string, unknown>) =>
+      p.status === 'captured' && paymentMatchesExclusiveSub(p, pending, pending.razorpay_order_id),
+    )
     if (captured?.id) {
-      await recordExclusiveSubscriptionPaid(pending, String(captured.id))
-      return jsonResponse({ already_unlocked: true }, 200, {}, [], origin)
+      const recorded = await recordExclusiveSubscriptionPaid(pending, String(captured.id))
+      if (recorded.ok) return jsonResponse({ already_unlocked: true }, 200, {}, [], origin)
     }
-    return jsonResponse({
-      order_id: pending.razorpay_order_id,
-      key_id: RAZORPAY_KEY_ID,
-      amount: amountPaise,
-      currency: 'INR',
-    }, 200, {}, [], origin)
+
+    // Reuse only when pending amount still matches current room fee.
+    if (Number(pending.amount_paise) === amountPaise) {
+      const orderLive = await razorpayGet(`/orders/${encodeURIComponent(pending.razorpay_order_id)}`)
+      if (orderLive && Number(orderLive.amount) === amountPaise) {
+        return jsonResponse({
+          order_id: pending.razorpay_order_id,
+          key_id: RAZORPAY_KEY_ID,
+          amount: amountPaise,
+          currency: 'INR',
+        }, 200, {}, [], origin)
+      }
+    }
+
+    // Fee changed or stale order — cancel pending and create a fresh order.
+    await fetch(
+      `${SUPABASE_URL}/rest/v1/exclusive_room_subscriptions?id=eq.${pending.id}&status=eq.created`,
+      {
+        method: 'PATCH',
+        headers: { ...authHeaders(true), Prefer: 'return=minimal' },
+        body: JSON.stringify({ status: 'cancelled' }),
+      },
+    ).catch(() => {})
+    pending = null
   }
 
   const orderRes = await fetch('https://api.razorpay.com/v1/orders', {
@@ -4862,7 +5045,25 @@ const handleExclusiveRoomCheckout = async (req: Request) => {
     }]),
   })
   if (!insert.ok) {
-    console.error('Exclusive sub insert failed:', await insert.text().catch(() => ''))
+    const errText = await insert.text().catch(() => '')
+    console.error('Exclusive sub insert failed:', errText)
+    // Race: another request created pending — reuse if amount matches.
+    if (/duplicate|unique|idx_exclusive_subs_one_pending/i.test(errText)) {
+      const again = await fetch(
+        `${SUPABASE_URL}/rest/v1/exclusive_room_subscriptions?room_id=eq.${roomId}&user_id=eq.${user.id}&status=eq.created&select=*&limit=1`,
+        { headers: { ...authHeaders(true) } },
+      )
+      const rows = again.ok ? await again.json().catch(() => []) : []
+      const row = Array.isArray(rows) && rows.length ? rows[0] : null
+      if (row?.razorpay_order_id && Number(row.amount_paise) === amountPaise) {
+        return jsonResponse({
+          order_id: row.razorpay_order_id,
+          key_id: RAZORPAY_KEY_ID,
+          amount: amountPaise,
+          currency: 'INR',
+        }, 200, {}, [], origin)
+      }
+    }
     return jsonResponse({ error: 'Failed to start checkout' }, 500, {}, [], origin)
   }
 
@@ -4901,18 +5102,107 @@ const handleExclusiveRoomVerifyPayment = async (req: Request) => {
   if (sub.status === 'paid') {
     return jsonResponse({ status: 'paid', expires_at: sub.expires_at }, 200, {}, [], origin)
   }
+  if (sub.status !== 'created') {
+    return jsonResponse({ error: 'Subscription is not awaiting payment' }, 400, {}, [], origin)
+  }
 
   const live = await razorpayGet(`/payments/${encodeURIComponent(paymentId)}`)
-  if (!live || live.status !== 'captured' || String(live.order_id) !== orderId) {
-    return jsonResponse({ error: 'Payment not captured' }, 400, {}, [], origin)
-  }
-  if (Number(live.amount) !== Number(sub.amount_paise)) {
-    return jsonResponse({ error: 'Payment amount mismatch' }, 400, {}, [], origin)
+  if (!live || live.status !== 'captured' || !paymentMatchesExclusiveSub(live, sub, orderId)) {
+    return jsonResponse({ error: 'Payment details did not match this subscription' }, 400, {}, [], origin)
   }
 
   const recorded = await recordExclusiveSubscriptionPaid(sub, paymentId)
   if (!recorded.ok) return jsonResponse({ error: 'Failed to activate access' }, 500, {}, [], origin)
   return jsonResponse({ status: 'paid', expires_at: recorded.expires_at }, 200, {}, [], origin)
+}
+
+const handleExclusiveRoomPaymentStatus = async (req: Request, url: URL) => {
+  const origin = req.headers.get('origin')
+  const user = await requireUser(req)
+  if (!user) return jsonResponse({ error: 'Unauthorized' }, 401, {}, [], origin)
+  const roomId = (url.searchParams.get('room_id') || '').trim()
+  const room = await fetchExclusiveRoomById(roomId)
+  if (!room) return jsonResponse({ error: 'Room not found' }, 404, {}, [], origin)
+  if (room.creator_id === user.id || await hasExclusiveAccess(roomId, user.id)) {
+    return jsonResponse({ status: 'paid', has_access: true }, 200, {}, [], origin)
+  }
+
+  const orderFilter = url.searchParams.get('order_id')
+  const orderClause = orderFilter ? `&razorpay_order_id=eq.${encodeURIComponent(orderFilter)}` : ''
+  const subRes = await fetch(
+    `${SUPABASE_URL}/rest/v1/exclusive_room_subscriptions?room_id=eq.${roomId}&user_id=eq.${user.id}${orderClause}&select=*&order=created_at.desc&limit=1`,
+    { headers: { ...authHeaders(true) } },
+  )
+  const rows = subRes.ok ? await subRes.json().catch(() => []) : []
+  const sub = Array.isArray(rows) && rows.length ? rows[0] : null
+  if (!sub) return jsonResponse({ status: 'unpaid', has_access: false }, 200, {}, [], origin)
+  if (sub.status === 'paid' && sub.expires_at && new Date(sub.expires_at) > new Date()) {
+    return jsonResponse({ status: 'paid', has_access: true, expires_at: sub.expires_at }, 200, {}, [], origin)
+  }
+  if (sub.status !== 'created' || !sub.razorpay_order_id) {
+    return jsonResponse({ status: 'unpaid', has_access: false }, 200, {}, [], origin)
+  }
+  if (!RAZORPAY_KEY_ID || !RAZORPAY_KEY_SECRET) {
+    return jsonResponse({ status: 'processing', has_access: false }, 200, {}, [], origin)
+  }
+
+  const payments = await razorpayGet(`/orders/${encodeURIComponent(sub.razorpay_order_id)}/payments`)
+  const items = Array.isArray(payments?.items) ? payments.items : []
+  const captured = items.find((payment: Record<string, unknown>) =>
+    payment.status === 'captured' && paymentMatchesExclusiveSub(payment, sub, sub.razorpay_order_id),
+  )
+  if (captured?.id) {
+    const recorded = await recordExclusiveSubscriptionPaid(sub, String(captured.id))
+    if (recorded.ok) {
+      return jsonResponse({ status: 'paid', has_access: true, expires_at: recorded.expires_at }, 200, {}, [], origin)
+    }
+    return jsonResponse({ status: 'processing', has_access: false }, 202, {}, [], origin)
+  }
+  const active = items.some((payment: Record<string, unknown>) =>
+    ['authorized', 'created'].includes(String(payment.status))
+      && paymentMatchesExclusiveSub(payment, sub, sub.razorpay_order_id),
+  )
+  return jsonResponse({
+    status: active ? 'processing' : 'unpaid',
+    has_access: false,
+  }, 200, {}, [], origin)
+}
+
+const handleDeleteExclusiveRoom = async (req: Request) => {
+  const origin = req.headers.get('origin')
+  const user = await requireRole(req, 'creator')
+  if (!user) return jsonResponse({ error: 'Unauthorized' }, 401, {}, [], origin)
+  const body = await parseJson(req)
+  const roomId = typeof body.room_id === 'string' ? body.room_id.trim() : ''
+  const room = await fetchExclusiveRoomById(roomId)
+  if (!room || room.creator_id !== user.id) return jsonResponse({ error: 'Room not found' }, 404, {}, [], origin)
+
+  const postsRes = await fetch(
+    `${SUPABASE_URL}/rest/v1/exclusive_room_posts?room_id=eq.${roomId}&select=media_paths`,
+    { headers: { ...authHeaders(true) } },
+  )
+  const postRows = postsRes.ok ? await postsRes.json().catch(() => []) : []
+  const paths: string[] = []
+  if (room.thumbnail_path) paths.push(String(room.thumbnail_path))
+  for (const post of Array.isArray(postRows) ? postRows : []) {
+    for (const p of Array.isArray(post.media_paths) ? post.media_paths : []) {
+      if (typeof p === 'string' && p) paths.push(p)
+    }
+  }
+  if (paths.length) {
+    await fetch(`${SUPABASE_URL}/storage/v1/object/${POST_MEDIA_BUCKET}`, {
+      method: 'DELETE',
+      headers: { ...authHeaders(true) },
+      body: JSON.stringify({ prefixes: paths }),
+    }).catch(() => {})
+  }
+
+  const del = await fetch(
+    `${SUPABASE_URL}/rest/v1/exclusive_rooms?id=eq.${roomId}&creator_id=eq.${user.id}`,
+    { method: 'DELETE', headers: { ...authHeaders(true) } },
+  )
+  if (!del.ok) return jsonResponse({ error: 'Failed to delete room' }, 500, {}, [], origin)
+  return jsonResponse({ status: 'deleted' }, 200, {}, [], origin)
 }
 
 
@@ -4976,6 +5266,8 @@ const routeRequest = async (req: Request) => {
   if (isRoute('exclusive-room-post') && req.method === 'GET') return handleGetExclusiveRoomPost(req, url)
   if (isRoute('exclusive-room-checkout') && req.method === 'POST') return handleExclusiveRoomCheckout(req)
   if (isRoute('exclusive-room-verify-payment') && req.method === 'POST') return handleExclusiveRoomVerifyPayment(req)
+  if (isRoute('exclusive-room-payment-status') && req.method === 'GET') return handleExclusiveRoomPaymentStatus(req, url)
+  if (isRoute('exclusive-rooms/delete') && req.method === 'POST') return handleDeleteExclusiveRoom(req)
   if (isRoute('payout-account') && req.method === 'GET') return handleGetPayoutAccount(req)
   if (isRoute('payout-account') && req.method === 'POST') return handleSavePayoutAccount(req)
   if (isRoute('wallet') && req.method === 'GET') return handleGetWallet(req)

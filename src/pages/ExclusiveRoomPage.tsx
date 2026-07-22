@@ -9,6 +9,7 @@ import {
   checkoutExclusiveRoom,
   verifyExclusiveRoomPayment,
   deleteExclusiveRoomPost,
+  deleteExclusiveRoom,
   type ExclusiveRoom,
   type ExclusiveRoomPost,
 } from "../lib/auth";
@@ -23,7 +24,6 @@ export default function ExclusiveRoomPage() {
   const [search] = useSearchParams();
   const navigate = useNavigate();
   const { user } = useAuth();
-  const creatorBase = username ? `/${username}` : "";
 
   const [room, setRoom] = useState<ExclusiveRoom | null>(null);
   const [posts, setPosts] = useState<ExclusiveRoomPost[]>([]);
@@ -33,6 +33,12 @@ export default function ExclusiveRoomPage() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [postMenu, setPostMenu] = useState(false);
+
+  const manageBase = username
+    ? `/${username}`
+    : user?.user_metadata?.username
+    ? `/${user.user_metadata.username}`
+    : "";
 
   const load = useCallback(async () => {
     if (!roomId) return;
@@ -60,13 +66,19 @@ export default function ExclusiveRoomPage() {
     if (!order || !payment || !signature || !roomId) return;
     (async () => {
       setBusy(true);
-      await verifyExclusiveRoomPayment({
+      setError("");
+      const verified = await verifyExclusiveRoomPayment({
         room_id: roomId,
         razorpay_order_id: order,
         razorpay_payment_id: payment,
         razorpay_signature: signature,
       });
       setBusy(false);
+      if (verified.error) {
+        setError(verified.error);
+        navigate(username ? `/${username}/exclusive/${roomId}` : `/exclusive/${roomId}`, { replace: true });
+        return;
+      }
       navigate(username ? `/${username}/exclusive/${roomId}` : `/exclusive/${roomId}`, { replace: true });
       await load();
     })();
@@ -76,6 +88,19 @@ export default function ExclusiveRoomPage() {
     if (username && isOwner) navigate(`/${username}`);
     else if (room?.creator_slug) navigate(`/${room.creator_slug}`);
     else navigate(-1);
+  };
+
+  const handleDeleteRoom = async () => {
+    if (!room || !isOwner) return;
+    if (!window.confirm("Delete this exclusive room and all posts inside it?")) return;
+    setBusy(true);
+    const r = await deleteExclusiveRoom(room.id);
+    setBusy(false);
+    if (r.error) {
+      setError(r.error);
+      return;
+    }
+    navigate(manageBase || "/", { replace: true });
   };
 
   const enterRoom = async () => {
@@ -118,13 +143,17 @@ export default function ExclusiveRoomPage() {
         razorpay_payment_id: string;
         razorpay_signature: string;
       }) => {
-        await verifyExclusiveRoomPayment({
+        const verified = await verifyExclusiveRoomPayment({
           room_id: room.id,
           razorpay_order_id: response.razorpay_order_id,
           razorpay_payment_id: response.razorpay_payment_id,
           razorpay_signature: response.razorpay_signature,
         });
         setBusy(false);
+        if (verified.error) {
+          setError(verified.error);
+          return;
+        }
         navigate(returnPath, { replace: true });
         await load();
       },
@@ -176,15 +205,25 @@ export default function ExclusiveRoomPage() {
                 : ""}
             </p>
           </div>
-          {isOwner && creatorBase && (
-            <button
-              type="button"
-              onClick={() => navigate(`${creatorBase}/exclusive/${room.id}/edit`)}
-              className="p-2 rounded-xl hover:bg-zinc-100 text-zinc-600"
-              aria-label="Edit room"
-            >
-              <Settings className="w-5 h-5" />
-            </button>
+          {isOwner && manageBase && (
+            <div className="flex items-center gap-1">
+              <button
+                type="button"
+                onClick={() => navigate(`${manageBase}/exclusive/${room.id}/edit`)}
+                className="p-2 rounded-xl hover:bg-zinc-100 text-zinc-600"
+                aria-label="Edit room"
+              >
+                <Settings className="w-5 h-5" />
+              </button>
+              <button
+                type="button"
+                onClick={handleDeleteRoom}
+                disabled={busy}
+                className="px-2.5 py-2 rounded-xl text-xs font-bold text-red-500 hover:bg-red-50"
+              >
+                Delete
+              </button>
+            </div>
           )}
         </div>
 
@@ -221,7 +260,7 @@ export default function ExclusiveRoomPage() {
           </div>
         ) : (
           <>
-            {isOwner && creatorBase && (
+            {isOwner && manageBase && (
               <div className="relative mb-4">
                 <button
                   type="button"
@@ -238,7 +277,7 @@ export default function ExclusiveRoomPage() {
                         type="button"
                         onClick={() => {
                           setPostMenu(false);
-                          navigate(`${creatorBase}/exclusive/${room.id}/create?type=photo`);
+                          navigate(`${manageBase}/exclusive/${room.id}/create?type=photo`);
                         }}
                         className="w-full flex items-center gap-3 px-4 py-3.5 hover:bg-rose-50 text-left"
                       >
@@ -250,7 +289,7 @@ export default function ExclusiveRoomPage() {
                         type="button"
                         onClick={() => {
                           setPostMenu(false);
-                          navigate(`${creatorBase}/exclusive/${room.id}/create?type=video`);
+                          navigate(`${manageBase}/exclusive/${room.id}/create?type=video`);
                         }}
                         className="w-full flex items-center gap-3 px-4 py-3.5 hover:bg-rose-50 text-left"
                       >

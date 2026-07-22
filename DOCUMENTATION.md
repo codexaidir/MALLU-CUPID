@@ -222,6 +222,7 @@ The application uses URL-based pagination (React Router) with the following rout
 - Creators can withdraw only from sales paid ≥24 hours ago.
 - Migration `022`: withdrawal platform fee via SQL (`platform_withdrawal_fee_bps`, `calc_withdrawal_platform_fee_paise`); rate in `platform_config.withdrawal_fee_bps` (900 = 9%); gross reserved from wallet, `net_payout_paise` is what admin transfers.
 - Migration `023`: Exclusive Rooms (max 4/creator) — Instagram-highlights UI; monthly entry fee via Razorpay (30-day access); room gallery posts with no per-post pricing; earnings included in wallet lifetime/withdrawable.
+- Migration `024`: exclusive checkout uniqueness (one pending per user/room), cancelled status, payment amount matching on webhook/reconcile, locked-room metadata redaction, room delete, wallet/admin exclusive sales.
 - Bootstrap admin: `node scripts/create-admin-user.mjs` (requires `SUPABASE_SERVICE_ROLE_KEY`).
 
 

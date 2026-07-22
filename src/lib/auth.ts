@@ -670,6 +670,19 @@ export async function deleteExclusiveRoomPost(publicId: string): Promise<{ statu
   return apiPost('/exclusive-room-posts/delete', { public_id: publicId });
 }
 
+export async function deleteExclusiveRoom(roomId: string): Promise<{ status?: string; error?: string }> {
+  return apiPost('/exclusive-rooms/delete', { room_id: roomId });
+}
+
+export async function getExclusiveRoomPaymentStatus(
+  roomId: string,
+  orderId?: string,
+): Promise<{ status?: string; has_access?: boolean; expires_at?: string; error?: string }> {
+  const q = new URLSearchParams({ room_id: roomId });
+  if (orderId) q.set('order_id', orderId);
+  return apiGet(`/exclusive-room-payment-status?${q.toString()}`);
+}
+
 export async function getExclusiveRoomPost(publicId: string): Promise<{
   post?: ExclusiveRoomPost;
   error?: string;
