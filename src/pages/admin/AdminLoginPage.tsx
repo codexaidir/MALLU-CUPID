@@ -2,9 +2,9 @@ import React, { useEffect, useState } from "react";
 import { motion, AnimatePresence } from "motion/react";
 import { Mail, Lock, Loader2, AlertCircle, Shield } from "lucide-react";
 import { useNavigate } from "react-router-dom";
-import { adminLogin } from "../lib/admin";
-import { useAuth } from "../lib/useAuth";
-import { BrandLogo } from "../components/BrandMark";
+import { adminLogin } from "../../lib/admin";
+import { useAuth } from "../../lib/useAuth";
+import { BrandLogo } from "../../components/BrandMark";
 
 export default function AdminLoginPage() {
   const navigate = useNavigate();
