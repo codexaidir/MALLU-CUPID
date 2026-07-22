@@ -2,7 +2,8 @@ import React, { useState, useEffect } from "react";
 import { motion, AnimatePresence } from "motion/react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { LogOut, LayoutDashboard, Users, CreditCard, Heart, Grid, PlaySquare, Play, Menu, X, Bell, ShieldCheck, BadgeCheck, Wallet, MoreVertical, Edit2, Trash2, Plus, Copy, Check, Inbox, Link2, ImagePlus, Radio, TrendingUp, Sparkles, UploadCloud, FileImage, FileVideo, Eye, LockKeyhole, Video, Layers, HelpCircle } from "lucide-react";
-import { getProfile, publicProfileSlug, type CreatorPost, type Profile, type ProfileStats } from "../lib/auth";
+import { getProfile, publicProfileSlug, type CreatorPost, type Profile, type ProfileStats, type ExclusiveRoom } from "../lib/auth";
+import { ExclusiveHighlightsRow } from "../components/ExclusiveHighlightsRow";
 import { useAuth } from "../lib/useAuth";
 import { BrandIcon } from "../components/BrandMark";
 
@@ -22,6 +23,7 @@ export default function DashboardPage() {
   const navigate = useNavigate();
 
   const [posts, setPosts] = useState<CreatorPost[]>([]);
+  const [rooms, setRooms] = useState<ExclusiveRoom[]>([]);
 
   const filteredPosts = posts.filter(post => activeTab === 'grid' ? post.media_type === 'image' : post.media_type === 'video');
 
@@ -31,6 +33,7 @@ export default function DashboardPage() {
       if (response.profile) setProfile(response.profile);
       if (response.stats) setStats(response.stats);
       setPosts(response.posts || []);
+      setRooms(response.rooms || []);
       setIsLoading(false);
     })();
   }, []);
@@ -199,8 +202,7 @@ export default function DashboardPage() {
                     {/* Stats Desktop */}
                     <div className="flex items-center gap-6 sm:gap-10">
                       <div className="flex flex-col items-center sm:items-start"><span className="font-bold text-zinc-900 text-lg">{stats.posts}</span> <span className="text-zinc-900 text-sm">posts</span></div>
-                      <div className="flex flex-col items-center sm:items-start"><span className="font-bold text-zinc-900 text-lg">{stats.followers}</span> <span className="text-zinc-900 text-sm">followers</span></div>
-                      <div className="flex flex-col items-center sm:items-start"><span className="font-bold text-zinc-900 text-lg">{stats.following}</span> <span className="text-zinc-900 text-sm">following</span></div>
+                      <div className="flex flex-col items-center sm:items-start"><span className="font-bold text-zinc-900 text-lg">{stats.followers}</span> <span className="text-zinc-900 text-sm">subscribers</span></div>
                     </div>
                   </div>
                 </div>
@@ -283,6 +285,16 @@ export default function DashboardPage() {
                   </div>
                 </div>
               </motion.div>
+
+              {/* Exclusive Rooms — Instagram highlights style */}
+              <div className="mb-6">
+                <ExclusiveHighlightsRow
+                  rooms={rooms}
+                  canManage
+                  onAddRoom={() => navigate(`${base}/exclusive/new`)}
+                  onOpenRoom={(room) => navigate(`${base}/exclusive/${room.id}`)}
+                />
+              </div>
 
               {/* Content Tabs */}
               <div className="flex items-center justify-center gap-12 border-t border-zinc-200 pt-4 mb-2">

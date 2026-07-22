@@ -65,7 +65,7 @@ export default function PrivacyPolicyPage() {
       <section>
         <h2 className="text-xl font-semibold text-zinc-900">9. Contact Information</h2>
         <p>
-          If you have any questions regarding this Privacy Policy or your personal information, please contact us at <strong>support@mallucupid.com</strong>. Our registered business address is <strong>46/A1, Aluva, Ernakulam, Kerala, India</strong>.
+          If you have any questions regarding this Privacy Policy or your personal information, please contact us at <strong>support@mallucupid.com</strong> or <strong>+91-9581150441</strong>. Our registered business address is <strong>456, Gautam Nagar, JP Nagar 7th Phase, Bengaluru, Karnataka 560078, India</strong>.
         </p>
       </section>
     </LegalPageLayout>

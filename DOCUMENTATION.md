@@ -188,6 +188,7 @@ The application uses URL-based pagination (React Router) with the following rout
 - If the browser callback is lost after debit, the confirmation page, `GET /post-payment-status`, and `POST /razorpay-webhook` (HMAC with `RAZORPAY_WEBHOOK_SECRET`) reconcile captured payments. An authorized/processing payment shows **Confirmation pending / Do not pay again**. Purchase recording is atomic/idempotent.
 
 - Brand assets: logo `https://res.cloudinary.com/dsamz0zji/image/upload/v1784680966/mallucupidlogo_a44gud.png`; app icon `https://res.cloudinary.com/dsamz0zji/image/upload/v1784680970/appicon_n1we3u.png` (headers, footer, PWA, emails, favicon).
+- Legal pages (`/terms-and-conditions`, `/privacy-policy`, `/contact-us`, footer merchant block): MalluCupid platform terms (creators, paid unlocks, Razorpay); business address Bengaluru JP Nagar; support `support@mallucupid.com`; phone `+91-9581150441`.
 
 ## Wallet / auth / media hardening (017–018)
 
@@ -219,6 +220,8 @@ The application uses URL-based pagination (React Router) with the following rout
 - Login: `https://www.mallucupid.com/adminlogin` (email + password only; no signup/reset).
 - Dashboard: `https://www.mallucupid.com/admin<admin-user-uuid>` — Overview, Users (profile detail), Posts (view/delete media), Wallet & Payments, Creator Settlements, Withdrawals (view/accept/complete with txn ID + slip), Help, Reports.
 - Creators can withdraw only from sales paid ≥24 hours ago.
+- Migration `022`: withdrawal platform fee via SQL (`platform_withdrawal_fee_bps`, `calc_withdrawal_platform_fee_paise`); rate in `platform_config.withdrawal_fee_bps` (900 = 9%); gross reserved from wallet, `net_payout_paise` is what admin transfers.
+- Migration `023`: Exclusive Rooms (max 4/creator) — Instagram-highlights UI; monthly entry fee via Razorpay (30-day access); room gallery posts with no per-post pricing; earnings included in wallet lifetime/withdrawable.
 - Bootstrap admin: `node scripts/create-admin-user.mjs` (requires `SUPABASE_SERVICE_ROLE_KEY`).
 
 

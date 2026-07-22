@@ -192,7 +192,13 @@ export default function AdminDashboardPage() {
       const row = refreshed.withdrawals?.find((w) => w.id === id);
       if (row) {
         setWdView(row);
-        setCompleteForm({ txn: "", amount: String(row.amount), note: "", slipBase64: "", slipType: "" });
+        setCompleteForm({
+          txn: "",
+          amount: String(row.net_payout ?? row.amount),
+          note: "",
+          slipBase64: "",
+          slipType: "",
+        });
       }
     }
   };
@@ -479,6 +485,11 @@ export default function AdminDashboardPage() {
                       <Avatar url={w.creator_avatar_url} name={w.creator_username || w.creator_name} />
                       <div>
                         <p className="font-bold text-white">₹{w.amount}</p>
+                        <p className="text-xs text-zinc-500 mt-0.5">
+                          {w.fee_percent != null
+                            ? `Fee ${w.fee_percent}% ₹${w.platform_fee ?? 0} · Pay ₹${w.net_payout ?? w.amount}`
+                            : null}
+                        </p>
                         <p className="text-sm text-zinc-400">@{w.creator_username || "creator"} · {w.creator_email}</p>
                         <p className="text-xs text-zinc-500 mt-1">{fmtDate(w.created_at)} · {w.status}</p>
                       </div>
@@ -486,7 +497,13 @@ export default function AdminDashboardPage() {
                     <div className="flex flex-wrap gap-2">
                       <button type="button" onClick={() => {
                         setWdView(w);
-                        setCompleteForm({ txn: w.transfer_txn_id || "", amount: String(w.transfer_amount ?? w.amount), note: w.note || "", slipBase64: "", slipType: "" });
+                        setCompleteForm({
+                          txn: w.transfer_txn_id || "",
+                          amount: String(w.transfer_amount ?? w.net_payout ?? w.amount),
+                          note: w.note || "",
+                          slipBase64: "",
+                          slipType: "",
+                        });
                       }} className="flex items-center gap-1 px-3 py-2 rounded-xl bg-zinc-800 text-sm font-semibold">
                         <Eye className="w-4 h-4" /> View
                       </button>
@@ -642,8 +659,13 @@ export default function AdminDashboardPage() {
           <div className="w-full max-w-lg bg-zinc-900 border border-zinc-800 rounded-3xl p-5 space-y-4 max-h-[90vh] overflow-y-auto" onClick={(e) => e.stopPropagation()}>
             <div className="flex items-start justify-between">
               <div>
-                <p className="font-bold text-white text-xl">₹{wdView.amount}</p>
+                <p className="font-bold text-white text-xl">₹{wdView.amount} requested</p>
                 <p className="text-sm text-zinc-400">@{wdView.creator_username} · {wdView.status}</p>
+                {wdView.net_payout != null && (
+                  <p className="text-sm text-emerald-300 mt-1">
+                    Platform fee {wdView.fee_percent ?? 0}% (₹{wdView.platform_fee ?? 0}) · Transfer ₹{wdView.net_payout}
+                  </p>
+                )}
               </div>
               <button onClick={() => setWdView(null)} className="p-2 rounded-lg hover:bg-zinc-800"><X className="w-5 h-5" /></button>
             </div>

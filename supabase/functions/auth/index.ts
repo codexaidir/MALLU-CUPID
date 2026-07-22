@@ -1408,6 +1408,7 @@ const handlePublicProfile = async (req: Request, url: URL) => {
       is_following: isFollowing,
     },
     posts: publicPosts,
+    rooms: await listCreatorExclusiveRooms(profile.id, viewer?.id),
   }, 200, {}, [], origin)
 }
 
@@ -1633,7 +1634,8 @@ const handleGetProfile = async (req: Request) => {
     following: followingCountRes.ok ? readCount(followingCountRes) : 0,
   }
 
-  return jsonResponse({ profile, stats, posts }, 200, {}, [], origin)
+  const rooms = await listCreatorExclusiveRooms(user.id, user.id)
+  return jsonResponse({ profile, stats, posts, rooms }, 200, {}, [], origin)
 }
 
 const handleProfile = async (req: Request) => {
@@ -1786,7 +1788,7 @@ const handleGetWallet = async (req: Request) => {
   if (!user?.id) return jsonResponse({ error: 'Unauthorized' }, 401, {}, [], origin)
 
   // Lifetime = all paid sales. Available = paid ≥24h ago − pending/accepted/paid withdrawals.
-  const [lifetimeRes, withdrawableRes, salesRes, wdRes, countRes, payoutRes] = await Promise.all([
+  const [lifetimeRes, withdrawableRes, salesRes, wdRes, countRes, payoutRes, feeBpsRes] = await Promise.all([
     fetch(`${SUPABASE_URL}/rest/v1/rpc/wallet_lifetime_paise`, {
       method: 'POST',
       headers: { ...authHeaders(true) },
@@ -1802,7 +1804,7 @@ const handleGetWallet = async (req: Request) => {
       { headers: { ...authHeaders(true) } },
     ),
     fetch(
-      `${SUPABASE_URL}/rest/v1/wallet_withdrawals?creator_id=eq.${user.id}&select=id,amount_paise,status,account_holder,account_number_last4,ifsc,upi_id,created_at,processed_at,transfer_txn_id&order=created_at.desc&limit=50`,
+      `${SUPABASE_URL}/rest/v1/wallet_withdrawals?creator_id=eq.${user.id}&select=id,amount_paise,platform_fee_paise,net_payout_paise,fee_bps,status,account_holder,account_number_last4,ifsc,upi_id,created_at,processed_at,transfer_txn_id&order=created_at.desc&limit=50`,
       { headers: { ...authHeaders(true) } },
     ),
     fetch(
@@ -1813,6 +1815,11 @@ const handleGetWallet = async (req: Request) => {
       `${SUPABASE_URL}/rest/v1/payout_accounts?user_id=eq.${user.id}&select=account_holder,account_number,ifsc,upi_id,updated_at&limit=1`,
       { headers: { ...authHeaders(true) } },
     ),
+    fetch(`${SUPABASE_URL}/rest/v1/rpc/platform_withdrawal_fee_bps`, {
+      method: 'POST',
+      headers: { ...authHeaders(true) },
+      body: '{}',
+    }),
   ])
 
   if (!salesRes.ok) return jsonResponse({ error: 'Failed to load sales' }, 500, {}, [], origin)
@@ -1875,6 +1882,46 @@ const handleGetWallet = async (req: Request) => {
   const payoutRows = payoutRes.ok ? await payoutRes.json().catch(() => []) : []
   const payout = Array.isArray(payoutRows) && payoutRows.length ? payoutRows[0] : null
 
+  let feeBps = Number(feeBpsRes.ok ? await feeBpsRes.json().catch(() => 900) : 900)
+  if (!Number.isFinite(feeBps) || feeBps < 0) feeBps = 900
+
+  let previewFeePaise = 0
+  let previewNetPaise = availablePaise
+  if (availablePaise > 0) {
+    const [feeRes, netRes] = await Promise.all([
+      fetch(`${SUPABASE_URL}/rest/v1/rpc/calc_withdrawal_platform_fee_paise`, {
+        method: 'POST',
+        headers: { ...authHeaders(true) },
+        body: JSON.stringify({ p_amount_paise: availablePaise }),
+      }),
+      fetch(`${SUPABASE_URL}/rest/v1/rpc/calc_withdrawal_net_payout_paise`, {
+        method: 'POST',
+        headers: { ...authHeaders(true) },
+        body: JSON.stringify({ p_amount_paise: availablePaise }),
+      }),
+    ])
+    previewFeePaise = Number(feeRes.ok ? await feeRes.json().catch(() => 0) : 0) || 0
+    previewNetPaise = Number(netRes.ok ? await netRes.json().catch(() => availablePaise) : availablePaise) || 0
+  }
+
+  const mapWithdrawal = (w: Record<string, unknown>) => {
+    const amountPaise = Number(w.amount_paise || 0)
+    const feePaise = Number(w.platform_fee_paise ?? 0)
+    const netPaise = Number(w.net_payout_paise ?? Math.max(0, amountPaise - feePaise))
+    const rowFeeBps = Number(w.fee_bps ?? feeBps)
+    return {
+      ...w,
+      amount: amountPaise / 100,
+      amount_paise: amountPaise,
+      platform_fee: feePaise / 100,
+      platform_fee_paise: feePaise,
+      net_payout: netPaise / 100,
+      net_payout_paise: netPaise,
+      fee_bps: rowFeeBps,
+      fee_percent: rowFeeBps / 100,
+    }
+  }
+
   return jsonResponse({
     available_balance: availablePaise / 100,
     available_paise: availablePaise,
@@ -1885,11 +1932,17 @@ const handleGetWallet = async (req: Request) => {
     sales_count: salesCount,
     min_withdraw: 100,
     withdraw_hold_hours: 24,
+    platform_fee_bps: feeBps,
+    platform_fee_percent: feeBps / 100,
+    withdraw_preview: {
+      gross: availablePaise / 100,
+      platform_fee: previewFeePaise / 100,
+      net_payout: previewNetPaise / 100,
+      fee_bps: feeBps,
+      fee_percent: feeBps / 100,
+    },
     sales,
-    withdrawals: Array.isArray(withdrawals) ? withdrawals.map((w: Record<string, unknown>) => ({
-      ...w,
-      amount: Number(w.amount_paise || 0) / 100,
-    })) : [],
+    withdrawals: Array.isArray(withdrawals) ? withdrawals.map(mapWithdrawal) : [],
     account: publicPayoutAccount(payout),
   }, 200, {}, [], origin)
 }
@@ -1938,12 +1991,26 @@ const handleWalletWithdraw = async (req: Request) => {
     if (/minimum_withdrawal/i.test(errText)) {
       return jsonResponse({ error: 'Minimum withdrawal is ₹100' }, 400, {}, [], origin)
     }
+    if (/fee_calc_mismatch/i.test(errText)) {
+      return jsonResponse({ error: 'Platform fee calculation failed' }, 500, {}, [], origin)
+    }
     return jsonResponse({ error: 'Failed to submit withdrawal' }, 500, {}, [], origin)
   }
   const row = await insert.json().catch(() => null)
+  const amountPaiseOut = Number(row?.amount_paise ?? amountPaise)
+  const feePaise = Number(row?.platform_fee_paise ?? 0)
+  const netPaise = Number(row?.net_payout_paise ?? Math.max(0, amountPaiseOut - feePaise))
+  const feeBps = Number(row?.fee_bps ?? 0)
   return jsonResponse({
     status: 'withdrawal_requested',
-    withdrawal: row ? { ...row, amount: amountPaise / 100 } : null,
+    withdrawal: row ? {
+      ...row,
+      amount: amountPaiseOut / 100,
+      platform_fee: feePaise / 100,
+      net_payout: netPaise / 100,
+      fee_bps: feeBps,
+      fee_percent: feeBps / 100,
+    } : null,
   }, 200, {}, [], origin)
 }
 
@@ -2518,9 +2585,20 @@ const handleAdminWithdrawals = async (req: Request) => {
   const withdrawals = await Promise.all(list.map(async (w) => {
     const slipUrl = w.transfer_slip_path ? await signAdminSlip(String(w.transfer_slip_path)) : ''
     const payout = payouts[w.creator_id]
+    const amountPaise = Number(w.amount_paise || 0)
+    const feePaise = Number(w.platform_fee_paise ?? 0)
+    const netPaise = Number(w.net_payout_paise ?? Math.max(0, amountPaise - feePaise))
+    const feeBps = Number(w.fee_bps ?? 0)
     return {
       ...w,
-      amount: Number(w.amount_paise || 0) / 100,
+      amount: amountPaise / 100,
+      amount_paise: amountPaise,
+      platform_fee: feePaise / 100,
+      platform_fee_paise: feePaise,
+      net_payout: netPaise / 100,
+      net_payout_paise: netPaise,
+      fee_bps: feeBps,
+      fee_percent: feeBps / 100,
       transfer_amount: w.transfer_amount_paise != null ? Number(w.transfer_amount_paise) / 100 : null,
       transfer_slip_url: slipUrl,
       creator_name: accounts[w.creator_id]?.name || '',
@@ -3448,7 +3526,18 @@ const handleRazorpayWebhook = async (req: Request) => {
   )
   const purchaseRows = purchaseRes.ok ? await purchaseRes.json().catch(() => []) : []
   const purchase = Array.isArray(purchaseRows) && purchaseRows.length ? purchaseRows[0] : null
-  if (!purchase) return jsonResponse({ status: 'ignored', reason: 'unknown order' }, 200, {}, [], origin)
+  if (!purchase) {
+    const subRes = await fetch(
+      `${SUPABASE_URL}/rest/v1/exclusive_room_subscriptions?razorpay_order_id=eq.${encodeURIComponent(orderId)}&select=*&limit=1`,
+      { headers: { ...authHeaders(true) } },
+    )
+    const subRows = subRes.ok ? await subRes.json().catch(() => []) : []
+    const sub = Array.isArray(subRows) && subRows.length ? subRows[0] : null
+    if (!sub) return jsonResponse({ status: 'ignored', reason: 'unknown order' }, 200, {}, [], origin)
+    if (sub.status === 'paid') return jsonResponse({ status: 'already_paid' }, 200, {}, [], origin)
+    const recorded = await recordExclusiveSubscriptionPaid(sub, paymentId)
+    return jsonResponse({ status: recorded.ok ? 'paid' : 'pending' }, recorded.ok ? 200 : 503, {}, [], origin)
+  }
   if (purchase.status === 'paid') return jsonResponse({ status: 'already_paid' }, 200, {}, [], origin)
 
   if (payment && !paymentMatchesPurchase(payment, purchase, orderId)) {
@@ -4216,6 +4305,617 @@ const handleReset = async (req: Request) => {
   return jsonResponse({ status: 'password_updated' }, 200, {}, [], origin)
 }
 
+
+const EXCLUSIVE_MONTH_MS = 30 * 24 * 60 * 60 * 1000
+
+const fetchExclusiveRoomById = async (roomId: string) => {
+  if (!/^[0-9a-f-]{36}$/i.test(roomId || '')) return null
+  const res = await fetch(
+    `${SUPABASE_URL}/rest/v1/exclusive_rooms?id=eq.${roomId}&select=*&limit=1`,
+    { headers: { ...authHeaders(true) } },
+  )
+  const rows = res.ok ? await res.json().catch(() => []) : []
+  return Array.isArray(rows) && rows.length ? rows[0] : null
+}
+
+const hasExclusiveAccess = async (roomId: string, userId: string) => {
+  const res = await fetch(`${SUPABASE_URL}/rest/v1/rpc/has_active_exclusive_access`, {
+    method: 'POST',
+    headers: { ...authHeaders(true) },
+    body: JSON.stringify({ p_room_id: roomId, p_user_id: userId }),
+  })
+  if (!res.ok) return false
+  const val = await res.json().catch(() => false)
+  return val === true
+}
+
+const publicExclusiveRoom = async (
+  row: Record<string, unknown>,
+  extras: Record<string, unknown> = {},
+) => {
+  const thumbPath = String(row.thumbnail_path || '')
+  const signed = thumbPath ? await signMediaPaths([thumbPath], 300) : {}
+  return {
+    id: row.id,
+    name: row.name,
+    thumbnail_url: signed[thumbPath] || '',
+    entry_fee: Number(row.entry_fee_paise || 0) / 100,
+    entry_fee_paise: Number(row.entry_fee_paise || 0),
+    sort_order: Number(row.sort_order || 0),
+    ...extras,
+  }
+}
+
+const listCreatorExclusiveRooms = async (creatorId: string, viewerId?: string) => {
+  const res = await fetch(
+    `${SUPABASE_URL}/rest/v1/exclusive_rooms?creator_id=eq.${creatorId}&select=*&order=sort_order.asc`,
+    { headers: { ...authHeaders(true) } },
+  )
+  const rows = res.ok ? await res.json().catch(() => []) : []
+  const list = Array.isArray(rows) ? rows : []
+  const out = []
+  for (const row of list) {
+    let hasAccess = viewerId ? row.creator_id === viewerId : false
+    if (viewerId && !hasAccess) hasAccess = await hasExclusiveAccess(row.id, viewerId)
+    out.push(await publicExclusiveRoom(row, { has_access: hasAccess }))
+  }
+  return out
+}
+
+const creatorSlugFor = async (creatorId: string) => {
+  const res = await fetch(
+    `${SUPABASE_URL}/rest/v1/profiles?id=eq.${creatorId}&select=username,public_serial&limit=1`,
+    { headers: { ...authHeaders(true) } },
+  )
+  const rows = res.ok ? await res.json().catch(() => []) : []
+  const p = Array.isArray(rows) && rows.length ? rows[0] : null
+  if (!p?.username) return ''
+  return `${p.username}${String(p.public_serial).padStart(5, '0')}`
+}
+
+const decorateExclusivePosts = async (posts: Record<string, unknown>[], includeMedia: boolean) => {
+  if (!includeMedia) {
+    return posts.map((post) => ({
+      id: post.id,
+      public_id: post.public_id,
+      room_id: post.room_id,
+      caption: post.caption || '',
+      media_type: post.media_type,
+      media_url: '',
+      media_urls: [],
+      media_count: Array.isArray(post.media_paths) ? post.media_paths.length : 0,
+      created_at: post.created_at,
+    }))
+  }
+  const allPaths: string[] = []
+  for (const post of posts) {
+    for (const path of Array.isArray(post.media_paths) ? post.media_paths as string[] : []) {
+      if (typeof path === 'string' && path) allPaths.push(path)
+    }
+  }
+  const signed = await signMediaPaths(allPaths)
+  return posts.map((post) => {
+    const paths = Array.isArray(post.media_paths) ? post.media_paths as string[] : []
+    const mediaUrls = paths.map((path) => signed[path] || '').filter(Boolean)
+    return {
+      id: post.id,
+      public_id: post.public_id,
+      room_id: post.room_id,
+      caption: post.caption || '',
+      media_type: post.media_type,
+      media_url: mediaUrls[0] || '',
+      media_urls: mediaUrls,
+      media_count: paths.length,
+      created_at: post.created_at,
+    }
+  })
+}
+
+const recordExclusiveSubscriptionPaid = async (
+  sub: Record<string, unknown>,
+  paymentId: string,
+) => {
+  const paidAt = new Date()
+  const expiresAt = new Date(paidAt.getTime() + EXCLUSIVE_MONTH_MS)
+  const updateRes = await fetch(
+    `${SUPABASE_URL}/rest/v1/exclusive_room_subscriptions?id=eq.${sub.id}&status=eq.created`,
+    {
+      method: 'PATCH',
+      headers: { ...authHeaders(true), Prefer: 'return=representation' },
+      body: JSON.stringify({
+        status: 'paid',
+        razorpay_payment_id: paymentId,
+        paid_at: paidAt.toISOString(),
+        expires_at: expiresAt.toISOString(),
+        verified_at: paidAt.toISOString(),
+      }),
+    },
+  )
+  if (!updateRes.ok) return { ok: false as const, expires_at: null as string | null }
+  const updated = await updateRes.json().catch(() => [])
+  if (!Array.isArray(updated) || !updated.length) {
+    const check = await fetch(
+      `${SUPABASE_URL}/rest/v1/exclusive_room_subscriptions?id=eq.${sub.id}&status=eq.paid&select=expires_at&limit=1`,
+      { headers: { ...authHeaders(true) } },
+    )
+    const rows = check.ok ? await check.json().catch(() => []) : []
+    const row = Array.isArray(rows) && rows.length ? rows[0] : null
+    return { ok: Boolean(row), expires_at: row?.expires_at || null }
+  }
+  await createNotification({
+    user_id: sub.creator_id as string,
+    actor_id: sub.user_id as string,
+    type: 'purchase',
+  }).catch(() => {})
+  notifyCreatorByEmail({
+    creatorId: sub.creator_id as string,
+    actorId: sub.user_id as string,
+    kind: 'purchase',
+    amount: Number(sub.amount_paise || 0) / 100,
+  }).catch(() => {})
+  return { ok: true as const, expires_at: expiresAt.toISOString() }
+}
+
+const handleListExclusiveRooms = async (req: Request) => {
+  const origin = req.headers.get('origin')
+  const user = await requireRole(req, 'creator')
+  if (!user) return jsonResponse({ error: 'Unauthorized' }, 401, {}, [], origin)
+  const rooms = await listCreatorExclusiveRooms(user.id, user.id)
+  return jsonResponse({ rooms }, 200, {}, [], origin)
+}
+
+const handleCreateExclusiveRoom = async (req: Request) => {
+  const origin = req.headers.get('origin')
+  const user = await requireRole(req, 'creator')
+  if (!user) return jsonResponse({ error: 'Unauthorized' }, 401, {}, [], origin)
+
+  const body = await parseJson(req)
+  const name = typeof body.name === 'string' ? body.name.trim() : ''
+  const fee = Number(body.entry_fee)
+  if (!name || name.length > 10) {
+    return jsonResponse({ error: 'Room name must be 1–10 characters' }, 400, {}, [], origin)
+  }
+  if (!Number.isFinite(fee) || fee < 10) {
+    return jsonResponse({ error: 'Monthly entry fee must be at least ₹10' }, 400, {}, [], origin)
+  }
+  const feePaise = Math.round(fee * 100)
+
+  const existing = await fetch(
+    `${SUPABASE_URL}/rest/v1/exclusive_rooms?creator_id=eq.${user.id}&select=sort_order&order=sort_order.asc`,
+    { headers: { ...authHeaders(true) } },
+  )
+  const rows = existing.ok ? await existing.json().catch(() => []) : []
+  const used = new Set((Array.isArray(rows) ? rows : []).map((r: { sort_order: number }) => r.sort_order))
+  if (used.size >= 4) return jsonResponse({ error: 'Maximum 4 exclusive rooms' }, 400, {}, [], origin)
+  let sortOrder = 0
+  while (used.has(sortOrder) && sortOrder < 4) sortOrder++
+
+  const insert = await fetch(`${SUPABASE_URL}/rest/v1/exclusive_rooms`, {
+    method: 'POST',
+    headers: { ...authHeaders(true), Prefer: 'return=representation' },
+    body: JSON.stringify([{
+      creator_id: user.id,
+      name,
+      entry_fee_paise: feePaise,
+      sort_order: sortOrder,
+      thumbnail_path: '',
+    }]),
+  })
+  if (!insert.ok) {
+    const errText = await insert.text().catch(() => '')
+    console.error('Create exclusive room failed:', errText)
+    if (/exclusive_room_limit/i.test(errText)) {
+      return jsonResponse({ error: 'Maximum 4 exclusive rooms' }, 400, {}, [], origin)
+    }
+    return jsonResponse({ error: 'Failed to create room' }, 500, {}, [], origin)
+  }
+  const created = await insert.json().catch(() => [])
+  const row = Array.isArray(created) && created.length ? created[0] : null
+  if (!row) return jsonResponse({ error: 'Failed to create room' }, 500, {}, [], origin)
+  return jsonResponse({ room: await publicExclusiveRoom(row, { has_access: true }) }, 200, {}, [], origin)
+}
+
+const handleUpdateExclusiveRoom = async (req: Request) => {
+  const origin = req.headers.get('origin')
+  const user = await requireRole(req, 'creator')
+  if (!user) return jsonResponse({ error: 'Unauthorized' }, 401, {}, [], origin)
+  const body = await parseJson(req)
+  const roomId = typeof body.room_id === 'string' ? body.room_id.trim() : ''
+  const room = await fetchExclusiveRoomById(roomId)
+  if (!room || room.creator_id !== user.id) return jsonResponse({ error: 'Room not found' }, 404, {}, [], origin)
+
+  const update: Record<string, unknown> = { updated_at: new Date().toISOString() }
+  if (typeof body.name === 'string') {
+    const name = body.name.trim()
+    if (!name || name.length > 10) return jsonResponse({ error: 'Room name must be 1–10 characters' }, 400, {}, [], origin)
+    update.name = name
+  }
+  if (body.entry_fee != null) {
+    const fee = Number(body.entry_fee)
+    if (!Number.isFinite(fee) || fee < 10) return jsonResponse({ error: 'Monthly entry fee must be at least ₹10' }, 400, {}, [], origin)
+    update.entry_fee_paise = Math.round(fee * 100)
+  }
+
+  const res = await fetch(
+    `${SUPABASE_URL}/rest/v1/exclusive_rooms?id=eq.${roomId}&creator_id=eq.${user.id}`,
+    {
+      method: 'PATCH',
+      headers: { ...authHeaders(true), Prefer: 'return=representation' },
+      body: JSON.stringify(update),
+    },
+  )
+  if (!res.ok) return jsonResponse({ error: 'Failed to update room' }, 500, {}, [], origin)
+  const rows = await res.json().catch(() => [])
+  const row = Array.isArray(rows) && rows.length ? rows[0] : null
+  if (!row) return jsonResponse({ error: 'Room not found' }, 404, {}, [], origin)
+  return jsonResponse({ room: await publicExclusiveRoom(row, { has_access: true }) }, 200, {}, [], origin)
+}
+
+const handleExclusiveThumbnailUpload = async (req: Request) => {
+  const origin = req.headers.get('origin')
+  const user = await requireRole(req, 'creator')
+  if (!user) return jsonResponse({ error: 'Unauthorized' }, 401, {}, [], origin)
+  const body = await parseJson(req)
+  const roomId = typeof body.room_id === 'string' ? body.room_id.trim() : ''
+  const room = await fetchExclusiveRoomById(roomId)
+  if (!room || room.creator_id !== user.id) return jsonResponse({ error: 'Room not found' }, 404, {}, [], origin)
+  const contentType = typeof body.content_type === 'string' ? body.content_type : ''
+  const size = Number(body.size)
+  if (!['image/jpeg', 'image/jpg', 'image/png', 'image/webp'].includes(contentType)) {
+    return jsonResponse({ error: 'Thumbnail must be JPG, PNG, or WEBP' }, 400, {}, [], origin)
+  }
+  if (!Number.isFinite(size) || size <= 0 || size > 5 * 1024 * 1024) {
+    return jsonResponse({ error: 'Thumbnail must be under 5MB' }, 400, {}, [], origin)
+  }
+  const ext = mediaExtension(contentType)
+  const path = `${user.id}/exclusive/${roomId}/thumb.${ext}`
+  const signRes = await fetch(`${SUPABASE_URL}/storage/v1/object/upload/sign/${POST_MEDIA_BUCKET}/${path}`, {
+    method: 'POST',
+    headers: { ...authHeaders(true) },
+    body: JSON.stringify({}),
+  })
+  if (!signRes.ok) return jsonResponse({ error: 'Failed to prepare thumbnail upload' }, 500, {}, [], origin)
+  const signed = await signRes.json().catch(() => null)
+  if (!signed?.url) return jsonResponse({ error: 'Failed to prepare thumbnail upload' }, 500, {}, [], origin)
+  return jsonResponse({ upload_url: `${SUPABASE_URL}/storage/v1${signed.url}`, path }, 200, {}, [], origin)
+}
+
+const handleExclusiveThumbnailConfirm = async (req: Request) => {
+  const origin = req.headers.get('origin')
+  const user = await requireRole(req, 'creator')
+  if (!user) return jsonResponse({ error: 'Unauthorized' }, 401, {}, [], origin)
+  const body = await parseJson(req)
+  const roomId = typeof body.room_id === 'string' ? body.room_id.trim() : ''
+  const path = typeof body.path === 'string' ? body.path.trim() : ''
+  const room = await fetchExclusiveRoomById(roomId)
+  if (!room || room.creator_id !== user.id) return jsonResponse({ error: 'Room not found' }, 404, {}, [], origin)
+  if (!path.startsWith(`${user.id}/exclusive/${roomId}/`)) {
+    return jsonResponse({ error: 'Invalid thumbnail path' }, 400, {}, [], origin)
+  }
+  const res = await fetch(
+    `${SUPABASE_URL}/rest/v1/exclusive_rooms?id=eq.${roomId}&creator_id=eq.${user.id}`,
+    {
+      method: 'PATCH',
+      headers: { ...authHeaders(true), Prefer: 'return=representation' },
+      body: JSON.stringify({ thumbnail_path: path, updated_at: new Date().toISOString() }),
+    },
+  )
+  if (!res.ok) return jsonResponse({ error: 'Failed to save thumbnail' }, 500, {}, [], origin)
+  const rows = await res.json().catch(() => [])
+  const row = Array.isArray(rows) && rows.length ? rows[0] : null
+  return jsonResponse({ room: row ? await publicExclusiveRoom(row, { has_access: true }) : null }, 200, {}, [], origin)
+}
+
+const handleGetExclusiveRoom = async (req: Request, url: URL) => {
+  const origin = req.headers.get('origin')
+  const user = await requireUser(req)
+  const roomId = (url.searchParams.get('id') || '').trim()
+  const room = await fetchExclusiveRoomById(roomId)
+  if (!room) return jsonResponse({ error: 'Room not found' }, 404, {}, [], origin)
+
+  const isOwner = Boolean(user?.id && room.creator_id === user.id)
+  const hasAccess = user?.id ? (isOwner || await hasExclusiveAccess(roomId, user.id)) : false
+  const slug = await creatorSlugFor(room.creator_id)
+
+  let expiresAt: string | null = null
+  if (user?.id && hasAccess && !isOwner) {
+    const subRes = await fetch(
+      `${SUPABASE_URL}/rest/v1/exclusive_room_subscriptions?room_id=eq.${roomId}&user_id=eq.${user.id}&status=eq.paid&select=expires_at&order=expires_at.desc&limit=1`,
+      { headers: { ...authHeaders(true) } },
+    )
+    const subs = subRes.ok ? await subRes.json().catch(() => []) : []
+    expiresAt = Array.isArray(subs) && subs[0]?.expires_at ? subs[0].expires_at : null
+  }
+
+  const postsRes = await fetch(
+    `${SUPABASE_URL}/rest/v1/exclusive_room_posts?room_id=eq.${roomId}&select=*&order=created_at.desc&limit=100`,
+    { headers: { ...authHeaders(true) } },
+  )
+  const postRows = postsRes.ok ? await postsRes.json().catch(() => []) : []
+  const posts = await decorateExclusivePosts(Array.isArray(postRows) ? postRows : [], hasAccess)
+
+  return jsonResponse({
+    room: await publicExclusiveRoom(room, {
+      has_access: hasAccess,
+      expires_at: expiresAt,
+      creator_slug: slug,
+      creator_id: room.creator_id,
+    }),
+    posts,
+    has_access: hasAccess,
+    is_owner: isOwner,
+  }, 200, {}, [], origin)
+}
+
+const handleExclusiveRoomUploadUrls = async (req: Request) => {
+  const origin = req.headers.get('origin')
+  const user = await requireRole(req, 'creator')
+  if (!user) return jsonResponse({ error: 'Unauthorized' }, 401, {}, [], origin)
+  const body = await parseJson(req)
+  const roomId = typeof body.room_id === 'string' ? body.room_id.trim() : ''
+  const room = await fetchExclusiveRoomById(roomId)
+  if (!room || room.creator_id !== user.id) return jsonResponse({ error: 'Room not found' }, 404, {}, [], origin)
+
+  const mediaType = body.media_type === 'video' ? 'video' : body.media_type === 'image' ? 'image' : null
+  const files = Array.isArray(body.files) ? body.files : []
+  if (!mediaType) return jsonResponse({ error: 'media_type must be image or video' }, 400, {}, [], origin)
+  if (!files.length) return jsonResponse({ error: 'No files provided' }, 400, {}, [], origin)
+  if (mediaType === 'image') {
+    if (files.length > MAX_IMAGES_PER_POST) return jsonResponse({ error: `Maximum ${MAX_IMAGES_PER_POST} images` }, 400, {}, [], origin)
+    for (const file of files) {
+      if (!POST_IMAGE_TYPES.includes(file?.content_type)) return jsonResponse({ error: 'Only JPG or PNG images are allowed' }, 400, {}, [], origin)
+      if (typeof file?.size !== 'number' || file.size <= 0 || file.size > MAX_IMAGE_SIZE) {
+        return jsonResponse({ error: 'Each image must be 50MB or smaller' }, 400, {}, [], origin)
+      }
+    }
+  } else {
+    if (files.length !== 1) return jsonResponse({ error: 'Exactly one video per post' }, 400, {}, [], origin)
+    const file = files[0]
+    if (typeof file?.content_type !== 'string' || !file.content_type.startsWith('video/')) {
+      return jsonResponse({ error: 'Only video files are allowed' }, 400, {}, [], origin)
+    }
+    if (typeof file?.size !== 'number' || file.size <= 0 || file.size > MAX_VIDEO_SIZE) {
+      return jsonResponse({ error: 'Video must be 500MB or smaller' }, 400, {}, [], origin)
+    }
+  }
+
+  const publicId = generatePostPublicId()
+  const uploads: Array<{ path: string; upload_url: string; content_type: string }> = []
+  for (let i = 0; i < files.length; i++) {
+    const file = files[i]
+    const ext = mediaExtension(file.content_type)
+    const path = `${user.id}/exclusive/${roomId}/${publicId}/${i}.${ext}`
+    const signRes = await fetch(`${SUPABASE_URL}/storage/v1/object/upload/sign/${POST_MEDIA_BUCKET}/${path}`, {
+      method: 'POST',
+      headers: { ...authHeaders(true) },
+      body: JSON.stringify({}),
+    })
+    if (!signRes.ok) return jsonResponse({ error: 'Failed to prepare upload' }, 500, {}, [], origin)
+    const signed = await signRes.json().catch(() => null)
+    if (!signed?.url) return jsonResponse({ error: 'Failed to prepare upload' }, 500, {}, [], origin)
+    uploads.push({ path, upload_url: `${SUPABASE_URL}/storage/v1${signed.url}`, content_type: file.content_type })
+  }
+  return jsonResponse({ post_public_id: publicId, uploads }, 200, {}, [], origin)
+}
+
+const handleCreateExclusiveRoomPost = async (req: Request) => {
+  const origin = req.headers.get('origin')
+  const user = await requireRole(req, 'creator')
+  if (!user) return jsonResponse({ error: 'Unauthorized' }, 401, {}, [], origin)
+  const body = await parseJson(req)
+  const roomId = typeof body.room_id === 'string' ? body.room_id.trim() : ''
+  const room = await fetchExclusiveRoomById(roomId)
+  if (!room || room.creator_id !== user.id) return jsonResponse({ error: 'Room not found' }, 404, {}, [], origin)
+  const publicId = typeof body.public_id === 'string' ? body.public_id.trim() : ''
+  const caption = typeof body.caption === 'string' ? body.caption.trim().slice(0, 500) : ''
+  const mediaType = body.media_type === 'video' ? 'video' : body.media_type === 'image' ? 'image' : null
+  const mediaPaths = Array.isArray(body.media_paths) ? body.media_paths.filter((p: unknown) => typeof p === 'string') : []
+  if (!publicId || !mediaType || !mediaPaths.length) {
+    return jsonResponse({ error: 'Invalid post payload' }, 400, {}, [], origin)
+  }
+  const prefix = `${user.id}/exclusive/${roomId}/${publicId}/`
+  if (!mediaPaths.every((p: string) => p.startsWith(prefix))) {
+    return jsonResponse({ error: 'Invalid media paths' }, 400, {}, [], origin)
+  }
+
+  const insert = await fetch(`${SUPABASE_URL}/rest/v1/exclusive_room_posts`, {
+    method: 'POST',
+    headers: { ...authHeaders(true), Prefer: 'return=representation' },
+    body: JSON.stringify([{
+      room_id: roomId,
+      creator_id: user.id,
+      public_id: publicId,
+      caption,
+      media_type: mediaType,
+      media_paths: mediaPaths,
+    }]),
+  })
+  if (!insert.ok) {
+    console.error('Exclusive post create failed:', await insert.text().catch(() => ''))
+    return jsonResponse({ error: 'Failed to create post' }, 500, {}, [], origin)
+  }
+  const rows = await insert.json().catch(() => [])
+  const row = Array.isArray(rows) && rows.length ? rows[0] : null
+  const decorated = row ? (await decorateExclusivePosts([row], true))[0] : null
+  return jsonResponse({ post: decorated }, 200, {}, [], origin)
+}
+
+const handleDeleteExclusiveRoomPost = async (req: Request) => {
+  const origin = req.headers.get('origin')
+  const user = await requireRole(req, 'creator')
+  if (!user) return jsonResponse({ error: 'Unauthorized' }, 401, {}, [], origin)
+  const body = await parseJson(req)
+  const publicId = typeof body.public_id === 'string' ? body.public_id.trim() : ''
+  const res = await fetch(
+    `${SUPABASE_URL}/rest/v1/exclusive_room_posts?public_id=eq.${encodeURIComponent(publicId)}&creator_id=eq.${user.id}&select=*&limit=1`,
+    { headers: { ...authHeaders(true) } },
+  )
+  const rows = res.ok ? await res.json().catch(() => []) : []
+  const post = Array.isArray(rows) && rows.length ? rows[0] : null
+  if (!post) return jsonResponse({ error: 'Post not found' }, 404, {}, [], origin)
+
+  const paths = Array.isArray(post.media_paths) ? post.media_paths : []
+  if (paths.length) {
+    await fetch(`${SUPABASE_URL}/storage/v1/object/${POST_MEDIA_BUCKET}`, {
+      method: 'DELETE',
+      headers: { ...authHeaders(true) },
+      body: JSON.stringify({ prefixes: paths }),
+    }).catch(() => {})
+  }
+  const del = await fetch(
+    `${SUPABASE_URL}/rest/v1/exclusive_room_posts?id=eq.${post.id}`,
+    { method: 'DELETE', headers: { ...authHeaders(true) } },
+  )
+  if (!del.ok) return jsonResponse({ error: 'Failed to delete post' }, 500, {}, [], origin)
+  return jsonResponse({ status: 'deleted' }, 200, {}, [], origin)
+}
+
+const handleGetExclusiveRoomPost = async (req: Request, url: URL) => {
+  const origin = req.headers.get('origin')
+  const user = await requireUser(req)
+  if (!user) return jsonResponse({ error: 'Unauthorized' }, 401, {}, [], origin)
+  const publicId = (url.searchParams.get('id') || '').trim()
+  const res = await fetch(
+    `${SUPABASE_URL}/rest/v1/exclusive_room_posts?public_id=eq.${encodeURIComponent(publicId)}&select=*&limit=1`,
+    { headers: { ...authHeaders(true) } },
+  )
+  const rows = res.ok ? await res.json().catch(() => []) : []
+  const post = Array.isArray(rows) && rows.length ? rows[0] : null
+  if (!post) return jsonResponse({ error: 'Post not found' }, 404, {}, [], origin)
+  const access = await hasExclusiveAccess(post.room_id, user.id)
+  if (!access) return jsonResponse({ error: 'Exclusive access required' }, 403, {}, [], origin)
+  const room = await fetchExclusiveRoomById(post.room_id)
+  const decorated = (await decorateExclusivePosts([post], true))[0]
+  return jsonResponse({
+    post: { ...decorated, room_name: room?.name || 'Exclusive' },
+  }, 200, {}, [], origin)
+}
+
+const handleExclusiveRoomCheckout = async (req: Request) => {
+  const origin = req.headers.get('origin')
+  const user = await requireUser(req)
+  if (!user) return jsonResponse({ error: 'Unauthorized' }, 401, {}, [], origin)
+  const body = await parseJson(req)
+  const roomId = typeof body.room_id === 'string' ? body.room_id.trim() : ''
+  const room = await fetchExclusiveRoomById(roomId)
+  if (!room) return jsonResponse({ error: 'Room not found' }, 404, {}, [], origin)
+  if (room.creator_id === user.id) return jsonResponse({ already_unlocked: true }, 200, {}, [], origin)
+  if (await hasExclusiveAccess(roomId, user.id)) return jsonResponse({ already_unlocked: true }, 200, {}, [], origin)
+  if (!RAZORPAY_KEY_ID || !RAZORPAY_KEY_SECRET) {
+    return jsonResponse({ error: 'Payments are not configured yet' }, 503, {}, [], origin)
+  }
+
+  const amountPaise = Number(room.entry_fee_paise)
+  const pendingRes = await fetch(
+    `${SUPABASE_URL}/rest/v1/exclusive_room_subscriptions?room_id=eq.${roomId}&user_id=eq.${user.id}&status=eq.created&select=*&order=created_at.desc&limit=1`,
+    { headers: { ...authHeaders(true) } },
+  )
+  const pendingRows = pendingRes.ok ? await pendingRes.json().catch(() => []) : []
+  let pending = Array.isArray(pendingRows) && pendingRows.length ? pendingRows[0] : null
+
+  if (pending?.razorpay_order_id) {
+    const payments = await razorpayGet(`/orders/${encodeURIComponent(pending.razorpay_order_id)}/payments`)
+    const items = Array.isArray(payments?.items) ? payments.items : []
+    const captured = items.find((p: Record<string, unknown>) => p.status === 'captured')
+    if (captured?.id) {
+      await recordExclusiveSubscriptionPaid(pending, String(captured.id))
+      return jsonResponse({ already_unlocked: true }, 200, {}, [], origin)
+    }
+    return jsonResponse({
+      order_id: pending.razorpay_order_id,
+      key_id: RAZORPAY_KEY_ID,
+      amount: amountPaise,
+      currency: 'INR',
+    }, 200, {}, [], origin)
+  }
+
+  const orderRes = await fetch('https://api.razorpay.com/v1/orders', {
+    method: 'POST',
+    headers: {
+      Authorization: `Basic ${btoa(`${RAZORPAY_KEY_ID}:${RAZORPAY_KEY_SECRET}`)}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      amount: amountPaise,
+      currency: 'INR',
+      receipt: `exr_${roomId.slice(0, 8)}_${Date.now()}`.slice(0, 40),
+      notes: { type: 'exclusive_room', room_id: roomId, user_id: user.id },
+    }),
+  })
+  if (!orderRes.ok) {
+    console.error('Exclusive Razorpay order failed:', await orderRes.text().catch(() => ''))
+    return jsonResponse({ error: 'Failed to create payment order' }, 500, {}, [], origin)
+  }
+  const order = await orderRes.json().catch(() => null)
+  if (!order?.id) return jsonResponse({ error: 'Failed to create payment order' }, 500, {}, [], origin)
+
+  const insert = await fetch(`${SUPABASE_URL}/rest/v1/exclusive_room_subscriptions`, {
+    method: 'POST',
+    headers: { ...authHeaders(true), Prefer: 'return=representation' },
+    body: JSON.stringify([{
+      room_id: roomId,
+      user_id: user.id,
+      creator_id: room.creator_id,
+      amount_paise: amountPaise,
+      razorpay_order_id: order.id,
+      status: 'created',
+    }]),
+  })
+  if (!insert.ok) {
+    console.error('Exclusive sub insert failed:', await insert.text().catch(() => ''))
+    return jsonResponse({ error: 'Failed to start checkout' }, 500, {}, [], origin)
+  }
+
+  return jsonResponse({
+    order_id: order.id,
+    key_id: RAZORPAY_KEY_ID,
+    amount: amountPaise,
+    currency: 'INR',
+  }, 200, {}, [], origin)
+}
+
+const handleExclusiveRoomVerifyPayment = async (req: Request) => {
+  const origin = req.headers.get('origin')
+  const user = await requireUser(req)
+  if (!user) return jsonResponse({ error: 'Unauthorized' }, 401, {}, [], origin)
+  const body = await parseJson(req)
+  const roomId = typeof body.room_id === 'string' ? body.room_id.trim() : ''
+  const orderId = typeof body.razorpay_order_id === 'string' ? body.razorpay_order_id.trim() : ''
+  const paymentId = typeof body.razorpay_payment_id === 'string' ? body.razorpay_payment_id.trim() : ''
+  const signature = typeof body.razorpay_signature === 'string' ? body.razorpay_signature.trim() : ''
+  if (!roomId || !orderId || !paymentId || !signature) {
+    return jsonResponse({ error: 'Missing payment fields' }, 400, {}, [], origin)
+  }
+  if (!RAZORPAY_KEY_SECRET) return jsonResponse({ error: 'Payments not configured' }, 503, {}, [], origin)
+
+  const expected = await hmacSha256Hex(RAZORPAY_KEY_SECRET, `${orderId}|${paymentId}`)
+  if (expected !== signature) return jsonResponse({ error: 'Invalid payment signature' }, 400, {}, [], origin)
+
+  const subRes = await fetch(
+    `${SUPABASE_URL}/rest/v1/exclusive_room_subscriptions?razorpay_order_id=eq.${encodeURIComponent(orderId)}&user_id=eq.${user.id}&room_id=eq.${roomId}&select=*&limit=1`,
+    { headers: { ...authHeaders(true) } },
+  )
+  const subs = subRes.ok ? await subRes.json().catch(() => []) : []
+  const sub = Array.isArray(subs) && subs.length ? subs[0] : null
+  if (!sub) return jsonResponse({ error: 'Subscription order not found' }, 404, {}, [], origin)
+  if (sub.status === 'paid') {
+    return jsonResponse({ status: 'paid', expires_at: sub.expires_at }, 200, {}, [], origin)
+  }
+
+  const live = await razorpayGet(`/payments/${encodeURIComponent(paymentId)}`)
+  if (!live || live.status !== 'captured' || String(live.order_id) !== orderId) {
+    return jsonResponse({ error: 'Payment not captured' }, 400, {}, [], origin)
+  }
+  if (Number(live.amount) !== Number(sub.amount_paise)) {
+    return jsonResponse({ error: 'Payment amount mismatch' }, 400, {}, [], origin)
+  }
+
+  const recorded = await recordExclusiveSubscriptionPaid(sub, paymentId)
+  if (!recorded.ok) return jsonResponse({ error: 'Failed to activate access' }, 500, {}, [], origin)
+  return jsonResponse({ status: 'paid', expires_at: recorded.expires_at }, 200, {}, [], origin)
+}
+
+
 serve(async (req) => {
   const response = await routeRequest(req)
   return attachAuthCookies(req, response)
@@ -4264,6 +4964,18 @@ const routeRequest = async (req: Request) => {
   if (isRoute('profile') && req.method === 'POST') return handleProfile(req)
   if (isRoute('post-upload-urls') && req.method === 'POST') return handlePostUploadUrls(req)
   if (isRoute('posts') && req.method === 'POST') return handleCreatePost(req)
+  if (isRoute('exclusive-rooms/update') && req.method === 'POST') return handleUpdateExclusiveRoom(req)
+  if (isRoute('exclusive-rooms/thumbnail-upload') && req.method === 'POST') return handleExclusiveThumbnailUpload(req)
+  if (isRoute('exclusive-rooms/thumbnail-confirm') && req.method === 'POST') return handleExclusiveThumbnailConfirm(req)
+  if (isRoute('exclusive-rooms') && req.method === 'GET') return handleListExclusiveRooms(req)
+  if (isRoute('exclusive-rooms') && req.method === 'POST') return handleCreateExclusiveRoom(req)
+  if (isRoute('exclusive-room') && req.method === 'GET') return handleGetExclusiveRoom(req, url)
+  if (isRoute('exclusive-room-upload-urls') && req.method === 'POST') return handleExclusiveRoomUploadUrls(req)
+  if (isRoute('exclusive-room-posts/delete') && req.method === 'POST') return handleDeleteExclusiveRoomPost(req)
+  if (isRoute('exclusive-room-posts') && req.method === 'POST') return handleCreateExclusiveRoomPost(req)
+  if (isRoute('exclusive-room-post') && req.method === 'GET') return handleGetExclusiveRoomPost(req, url)
+  if (isRoute('exclusive-room-checkout') && req.method === 'POST') return handleExclusiveRoomCheckout(req)
+  if (isRoute('exclusive-room-verify-payment') && req.method === 'POST') return handleExclusiveRoomVerifyPayment(req)
   if (isRoute('payout-account') && req.method === 'GET') return handleGetPayoutAccount(req)
   if (isRoute('payout-account') && req.method === 'POST') return handleSavePayoutAccount(req)
   if (isRoute('wallet') && req.method === 'GET') return handleGetWallet(req)

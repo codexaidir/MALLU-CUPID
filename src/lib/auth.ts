@@ -169,12 +169,26 @@ export interface WalletWithdrawal {
   id: string;
   amount: number;
   amount_paise: number;
-  status: 'pending' | 'paid' | 'rejected';
+  platform_fee?: number;
+  platform_fee_paise?: number;
+  net_payout?: number;
+  net_payout_paise?: number;
+  fee_bps?: number;
+  fee_percent?: number;
+  status: 'pending' | 'paid' | 'rejected' | 'accepted';
   account_holder: string;
   account_number_last4: string;
   ifsc: string;
   created_at: string;
   processed_at: string | null;
+}
+
+export interface WalletWithdrawPreview {
+  gross: number;
+  platform_fee: number;
+  net_payout: number;
+  fee_bps: number;
+  fee_percent: number;
 }
 
 export interface WalletSummary {
@@ -184,6 +198,9 @@ export interface WalletSummary {
   sales_count: number;
   min_withdraw: number;
   withdraw_hold_hours?: number;
+  platform_fee_bps?: number;
+  platform_fee_percent?: number;
+  withdraw_preview?: WalletWithdrawPreview;
   sales?: WalletSale[];
   withdrawals?: WalletWithdrawal[];
   account?: PayoutAccount | null;
@@ -246,7 +263,7 @@ export function uploadFileWithProgress(
   uploadUrl: string,
   file: Blob,
   contentType: string,
-  onProgress: (loaded: number) => void,
+  onProgress?: (loaded: number) => void,
 ): Promise<void> {
   return new Promise((resolve, reject) => {
     const xhr = new XMLHttpRequest();
@@ -254,11 +271,11 @@ export function uploadFileWithProgress(
     xhr.setRequestHeader('Content-Type', contentType);
     xhr.setRequestHeader('x-upsert', 'true');
     xhr.upload.onprogress = (event) => {
-      if (event.lengthComputable) onProgress(event.loaded);
+      if (event.lengthComputable && onProgress) onProgress(event.loaded);
     };
     xhr.onload = () => {
       if (xhr.status >= 200 && xhr.status < 300) {
-        onProgress(file.size);
+        onProgress?.(file.size);
         resolve();
       } else {
         reject(new Error(`Upload failed (${xhr.status})`));
@@ -421,6 +438,7 @@ export interface PublicProfileData {
     is_following: boolean;
   };
   posts: PublicProfilePost[];
+  rooms?: ExclusiveRoom[];
 }
 
 /** Guest endpoint: no auth required. Slug is <username><5-digit serial>. */
@@ -525,6 +543,7 @@ export async function getProfile(): Promise<{
   profile?: Profile;
   stats?: ProfileStats;
   posts?: CreatorPost[];
+  rooms?: ExclusiveRoom[];
   error?: string;
 }> {
   return apiGet('/profile');
@@ -543,4 +562,137 @@ export async function updateProfile(data: {
   avatar_content_type?: string;
 }) {
   return apiPost('/profile', data);
+}
+
+/* ── Exclusive Rooms ─────────────────────────────────────────── */
+
+export interface ExclusiveRoom {
+  id: string;
+  name: string;
+  thumbnail_url: string;
+  entry_fee: number;
+  entry_fee_paise: number;
+  sort_order: number;
+  has_access?: boolean;
+  expires_at?: string | null;
+  creator_slug?: string;
+  creator_id?: string;
+}
+
+export interface ExclusiveRoomPost {
+  id: string;
+  public_id: string;
+  room_id: string;
+  room_name?: string;
+  caption: string;
+  media_type: 'image' | 'video';
+  media_url: string;
+  media_urls?: string[];
+  media_count: number;
+  created_at: string;
+}
+
+export async function getExclusiveRooms(): Promise<{ rooms?: ExclusiveRoom[]; error?: string }> {
+  return apiGet('/exclusive-rooms');
+}
+
+export async function createExclusiveRoom(data: {
+  name: string;
+  entry_fee: number;
+}): Promise<{ room?: ExclusiveRoom; error?: string }> {
+  return apiPost('/exclusive-rooms', data);
+}
+
+export async function updateExclusiveRoom(data: {
+  room_id: string;
+  name?: string;
+  entry_fee?: number;
+}): Promise<{ room?: ExclusiveRoom; error?: string }> {
+  return apiPost('/exclusive-rooms/update', data);
+}
+
+export async function uploadExclusiveThumbnail(
+  roomId: string,
+  file: File,
+): Promise<{ room?: ExclusiveRoom; error?: string }> {
+  const urls = await apiPost('/exclusive-rooms/thumbnail-upload', {
+    room_id: roomId,
+    content_type: file.type || 'image/jpeg',
+    size: file.size,
+  }) as { upload_url?: string; path?: string; error?: string };
+  if (urls.error || !urls.upload_url || !urls.path) {
+    return { error: urls.error || 'Failed to prepare thumbnail upload' };
+  }
+  await uploadFileWithProgress(urls.upload_url, file, file.type || 'image/jpeg');
+  return apiPost('/exclusive-rooms/thumbnail-confirm', {
+    room_id: roomId,
+    path: urls.path,
+  });
+}
+
+export async function getExclusiveRoom(roomId: string): Promise<{
+  room?: ExclusiveRoom;
+  posts?: ExclusiveRoomPost[];
+  has_access?: boolean;
+  is_owner?: boolean;
+  error?: string;
+}> {
+  return apiGet(`/exclusive-room?id=${encodeURIComponent(roomId)}`);
+}
+
+export async function createExclusiveRoomUploadUrls(
+  roomId: string,
+  mediaType: 'image' | 'video',
+  files: Array<{ content_type: string; size: number }>,
+): Promise<{
+  post_public_id?: string;
+  uploads?: Array<{ path: string; upload_url: string }>;
+  error?: string;
+}> {
+  return apiPost('/exclusive-room-upload-urls', {
+    room_id: roomId,
+    media_type: mediaType,
+    files,
+  });
+}
+
+export async function createExclusiveRoomPost(data: {
+  room_id: string;
+  public_id: string;
+  caption: string;
+  media_type: 'image' | 'video';
+  media_paths: string[];
+}): Promise<{ post?: ExclusiveRoomPost; error?: string }> {
+  return apiPost('/exclusive-room-posts', data);
+}
+
+export async function deleteExclusiveRoomPost(publicId: string): Promise<{ status?: string; error?: string }> {
+  return apiPost('/exclusive-room-posts/delete', { public_id: publicId });
+}
+
+export async function getExclusiveRoomPost(publicId: string): Promise<{
+  post?: ExclusiveRoomPost;
+  error?: string;
+}> {
+  return apiGet(`/exclusive-room-post?id=${encodeURIComponent(publicId)}`);
+}
+
+export async function checkoutExclusiveRoom(roomId: string): Promise<{
+  already_unlocked?: boolean;
+  order_id?: string;
+  key_id?: string;
+  amount?: number;
+  currency?: string;
+  error?: string;
+}> {
+  return apiPost('/exclusive-room-checkout', { room_id: roomId });
+}
+
+export async function verifyExclusiveRoomPayment(data: {
+  room_id: string;
+  razorpay_order_id: string;
+  razorpay_payment_id: string;
+  razorpay_signature: string;
+}): Promise<{ status?: string; expires_at?: string; error?: string }> {
+  return apiPost('/exclusive-room-verify-payment', data);
 }

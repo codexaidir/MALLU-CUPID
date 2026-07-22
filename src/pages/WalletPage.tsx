@@ -22,6 +22,9 @@ export default function WalletPage() {
   const [held, setHeld] = useState(0);
   const [salesCount, setSalesCount] = useState(0);
   const [minWithdraw, setMinWithdraw] = useState(100);
+  const [feePercent, setFeePercent] = useState(0);
+  const [previewFee, setPreviewFee] = useState(0);
+  const [previewNet, setPreviewNet] = useState(0);
 
   const [isLoading, setIsLoading] = useState(true);
   const [isEditing, setIsEditing] = useState(false);
@@ -44,6 +47,9 @@ export default function WalletPage() {
     setHeld(response.held_balance || 0);
     setSalesCount(response.sales_count || 0);
     setMinWithdraw(response.min_withdraw || 100);
+    setFeePercent(response.platform_fee_percent ?? response.withdraw_preview?.fee_percent ?? 0);
+    setPreviewFee(response.withdraw_preview?.platform_fee ?? 0);
+    setPreviewNet(response.withdraw_preview?.net_payout ?? response.available_balance ?? 0);
     setSales(response.sales || []);
     setWithdrawals(response.withdrawals || []);
     if (response.account) {
@@ -101,7 +107,11 @@ export default function WalletPage() {
       setError(response.error);
       return;
     }
-    setWithdrawMsg("Withdrawal requested. Funds will be sent to your bank after review.");
+    setWithdrawMsg(
+      response.withdrawal?.net_payout != null
+        ? `Withdrawal requested. Platform fee ₹${Number(response.withdrawal.platform_fee || 0).toFixed(2)}; you receive ₹${Number(response.withdrawal.net_payout).toFixed(2)} after review.`
+        : "Withdrawal requested. Funds will be sent to your bank after review.",
+    );
     await load();
   };
 
@@ -143,6 +153,7 @@ export default function WalletPage() {
             <div className="text-xs text-rose-100">
               Min ₹{minWithdraw}
               {held > 0 ? ` · ₹${held.toFixed(0)} unlocking in 24h` : " · sales unlock after 24h"}
+              {feePercent > 0 ? ` · ${feePercent}% platform fee` : ""}
             </div>
             <button
               onClick={handleWithdraw}
@@ -153,6 +164,13 @@ export default function WalletPage() {
               Withdraw
             </button>
           </div>
+          {!isLoading && available >= minWithdraw && feePercent > 0 && (
+            <div className="mt-4 pt-3 border-t border-white/20 text-xs text-rose-50/95 space-y-1">
+              <div className="flex justify-between gap-3"><span>Withdraw</span><span>{formatInr(available)}</span></div>
+              <div className="flex justify-between gap-3"><span>Platform fee ({feePercent}%)</span><span>−{formatInr(previewFee)}</span></div>
+              <div className="flex justify-between gap-3 font-semibold"><span>You receive</span><span>{formatInr(previewNet)}</span></div>
+            </div>
+          )}
         </motion.div>
 
         <motion.div
@@ -324,7 +342,12 @@ export default function WalletPage() {
                 <li key={w.id} className="py-3 flex items-center justify-between gap-3 text-sm">
                   <div>
                     <p className="font-semibold text-zinc-900">{formatInr(w.amount)}</p>
-                    <p className="text-xs text-zinc-500">{new Date(w.created_at).toLocaleString()} · ••••{w.account_number_last4}</p>
+                    <p className="text-xs text-zinc-500">
+                      {w.net_payout != null
+                        ? `Fee ${formatInr(w.platform_fee || 0)} · Net ${formatInr(w.net_payout)} · `
+                        : ""}
+                      {new Date(w.created_at).toLocaleString()} · ••••{w.account_number_last4}
+                    </p>
                   </div>
                   <span className={`text-xs font-bold uppercase ${
                     w.status === "paid" ? "text-emerald-600" : w.status === "rejected" ? "text-red-500" : "text-amber-600"

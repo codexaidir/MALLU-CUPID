@@ -25,9 +25,9 @@ export function Footer() {
             <div className="mb-2 font-semibold text-zinc-900">Merchant details</div>
             <div className="text-sm leading-6">
               <div><strong>Company:</strong> MALLU CUPID</div>
-              <div><strong>Email:</strong> info@mallucupid.com</div>
-              <div><strong>Mobile:</strong> +91 9746109569</div>
-              <div><strong>Address:</strong> 46/A1, Aluva, Ernakulam, Kerala, India</div>
+              <div><strong>Email:</strong> support@mallucupid.com / info@mallucupid.com</div>
+              <div><strong>Mobile:</strong> +91-9581150441</div>
+              <div><strong>Address:</strong> 456, Gautam Nagar, JP Nagar 7th Phase, Bengaluru, Karnataka 560078, India</div>
               <div className="mt-1 text-xs text-zinc-500">Payments processed via Razorpay</div>
             </div>
           </div>

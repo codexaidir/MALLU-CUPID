@@ -9,6 +9,7 @@ import {
   checkoutPost, getPost, getPublicProfile, startConversation, togglePublicFollow,
   type PublicProfileData, type PublicProfilePost,
 } from "../lib/auth";
+import { ExclusiveHighlightsRow } from "../components/ExclusiveHighlightsRow";
 import { useAuth } from "../lib/useAuth";
 import { BRAND_APP_ICON_URL, BRAND_LOGO_URL } from "../lib/brand";
 import { loadRazorpay, type RazorpaySuccess } from "../lib/razorpay";
@@ -454,7 +455,7 @@ export default function PublicProfilePage() {
                 </div>
                 <div>
                   <strong>{data.stats.followers}</strong>
-                  <span className="block text-xs text-zinc-500">followers</span>
+                  <span className="block text-xs text-zinc-500">subscribers</span>
                 </div>
               </div>
               {data.profile.bio && (
@@ -480,6 +481,17 @@ export default function PublicProfilePage() {
               </div>
               {(actionError || paymentError) && (
                 <p className="mt-3 text-sm text-red-600">{actionError || paymentError}</p>
+              )}
+              {(data.rooms?.length || 0) > 0 && (
+                <div className="mt-6">
+                  <ExclusiveHighlightsRow
+                    rooms={data.rooms || []}
+                    onOpenRoom={(room) => {
+                      if (!requireLogin()) return;
+                      navigate(`/exclusive/${room.id}`);
+                    }}
+                  />
+                </div>
               )}
             </section>
 

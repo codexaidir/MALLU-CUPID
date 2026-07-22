@@ -36,6 +36,10 @@ import UserSignup from "./pages/UserSignup";
 import UserOtpVerify from "./pages/UserOtpVerify";
 import UserPasswordReset from "./pages/UserPasswordReset";
 import PaymentConfirmationPage from "./pages/PaymentConfirmationPage";
+import ExclusiveRoomPage from "./pages/ExclusiveRoomPage";
+import ExclusiveRoomFormPage from "./pages/ExclusiveRoomFormPage";
+import ExclusiveRoomCreatePostPage from "./pages/ExclusiveRoomCreatePostPage";
+import ExclusiveMediaViewerPage from "./pages/ExclusiveMediaViewerPage";
 import AdminLoginPage from "./pages/admin/AdminLoginPage";
 import AdminDashboardPage from "./pages/admin/AdminDashboardPage";
 
@@ -153,7 +157,9 @@ export default function App() {
             <Route path="/usersignup" element={<UserSignup />} />
             <Route path="/userotpverify" element={<UserOtpVerify />} />
             <Route path="/userpasswordreset" element={<UserPasswordReset />} />
+            <Route path="/view/exclusive/:postId" element={<RequireAuth><ExclusiveMediaViewerPage /></RequireAuth>} />
             <Route path="/view/:postId" element={<RequireAuth><MediaViewerPage /></RequireAuth>} />
+            <Route path="/exclusive/:roomId" element={<RequireAuth><ExclusiveRoomPage /></RequireAuth>} />
             <Route path="/report/:postId" element={<RequireAuth><ReportPostPage /></RequireAuth>} />
             <Route path="/payment-confirmation" element={<RequireAuth><PaymentConfirmationPage /></RequireAuth>} />
             <Route path="/user-inbox" element={<RequireAuth><InboxPage /></RequireAuth>} />
@@ -172,6 +178,10 @@ export default function App() {
               <Route index element={<DashboardPage />} />
               <Route path="edit-profile" element={<EditProfilePage />} />
               <Route path="create-post" element={<CreatePostPage />} />
+              <Route path="exclusive/new" element={<ExclusiveRoomFormPage />} />
+              <Route path="exclusive/:roomId/edit" element={<ExclusiveRoomFormPage />} />
+              <Route path="exclusive/:roomId/create" element={<ExclusiveRoomCreatePostPage />} />
+              <Route path="exclusive/:roomId" element={<ExclusiveRoomPage />} />
               <Route path="post/:postId" element={<MediaViewerPage />} />
               <Route path="post/:postId/edit" element={<EditPostPage />} />
               <Route path="post/:postId/report" element={<ReportPostPage />} />

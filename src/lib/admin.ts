@@ -112,6 +112,12 @@ export interface AdminWithdrawalRow {
   creator_avatar_url: string;
   amount_paise: number;
   amount: number;
+  platform_fee?: number;
+  platform_fee_paise?: number;
+  net_payout?: number;
+  net_payout_paise?: number;
+  fee_bps?: number;
+  fee_percent?: number;
   status: string;
   account_holder: string;
   account_number_last4: string;

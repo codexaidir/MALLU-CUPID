@@ -4,24 +4,25 @@ export default function ContactUsPage() {
   return (
     <LegalPageLayout
       title="Contact Us"
-      intro="We're here to assist you with account-related queries, payments, refunds, digital product purchases, technical support, and general inquiries."
+      intro="We're here to assist you with account-related queries, payments, refunds, digital content unlocks, technical support, and general inquiries."
     >
       <section>
         <h2 className="text-xl font-semibold text-zinc-900">Business Information</h2>
         <ul className="space-y-2 text-zinc-700">
-          <li><strong>Business Name:</strong> MALLU CUPID</li>
-          <li><strong>Email:</strong> info@mallucupid.com</li>
-          <li><strong>Mobile:</strong> +91 9746109569</li>
-          <li><strong>Registered Address:</strong> 46/A1, Aluva, Ernakulam, Kerala, India</li>
-          <li><strong>Business Type:</strong> Digital Products Marketplace</li>
-          <li><strong>Services:</strong> Online marketplace for digital products including software, templates, source code, graphics, documents, e-books, courses, and other downloadable digital content.</li>
+          <li><strong>Business Name:</strong> MalluCupid</li>
+          <li><strong>Email:</strong> support@mallucupid.com / info@mallucupid.com</li>
+          <li><strong>Phone:</strong> +91-9581150441</li>
+          <li><strong>Registered Address:</strong> 456, Gautam Nagar, JP Nagar 7th Phase, Bengaluru, Karnataka 560078, India</li>
+          <li><strong>Grievance Address:</strong> 4, 5 &amp; 6, Kothnur Main Rd, Nayak Layout, JP Nagar 7th Phase, J. P. Nagar, Bengaluru, Karnataka 560076, India</li>
+          <li><strong>Business Type:</strong> Creator content platform (free &amp; paid digital media, messaging, payouts)</li>
+          <li><strong>Website:</strong> www.mallucupid.com</li>
         </ul>
       </section>
 
       <section>
         <h2 className="text-xl font-semibold text-zinc-900">Customer Support</h2>
         <p>
-          For assistance regarding your account, payments, refunds, purchased digital products, order status, technical issues, or general support, please contact us using the details above. We aim to respond to all genuine inquiries as quickly as possible during our business hours.
+          For assistance regarding your account, payments, refunds, unlocked content, order status, technical issues, or general support, please contact us using the details above. We aim to respond to all genuine inquiries as quickly as possible during our business hours.
         </p>
       </section>
 
@@ -33,9 +34,10 @@ export default function ContactUsPage() {
       </section>
 
       <section>
-        <h2 className="text-xl font-semibold text-zinc-900">Legal & Compliance</h2>
+        <h2 className="text-xl font-semibold text-zinc-900">Legal &amp; Compliance / Grievance Officer</h2>
         <p>
-          All legal notices, compliance requests, copyright concerns, privacy-related inquiries, and policy questions may be submitted using the contact details provided above. We are committed to addressing all legitimate requests in accordance with applicable laws and our published policies.
+          All legal notices, compliance requests, copyright concerns, privacy-related inquiries, and policy questions may be submitted to{" "}
+          <strong>support@mallucupid.com</strong> or by post to the grievance address above. We are committed to addressing legitimate requests in accordance with applicable laws and our published policies.
         </p>
       </section>
     </LegalPageLayout>
