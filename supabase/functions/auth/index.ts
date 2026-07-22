@@ -1785,9 +1785,14 @@ const handleGetWallet = async (req: Request) => {
   const user = await requireRole(req, 'creator')
   if (!user?.id) return jsonResponse({ error: 'Unauthorized' }, 401, {}, [], origin)
 
-  // Lifetime sum must include ALL paid sales (not the display list's limit=100).
-  const [lifetimeRes, salesRes, wdRes, countRes, payoutRes] = await Promise.all([
+  // Lifetime = all paid sales. Available = paid ≥24h ago − pending/accepted/paid withdrawals.
+  const [lifetimeRes, withdrawableRes, salesRes, wdRes, countRes, payoutRes] = await Promise.all([
     fetch(`${SUPABASE_URL}/rest/v1/rpc/wallet_lifetime_paise`, {
+      method: 'POST',
+      headers: { ...authHeaders(true) },
+      body: JSON.stringify({ p_creator_id: user.id }),
+    }),
+    fetch(`${SUPABASE_URL}/rest/v1/rpc/wallet_withdrawable_paise`, {
       method: 'POST',
       headers: { ...authHeaders(true) },
       body: JSON.stringify({ p_creator_id: user.id }),
@@ -1797,7 +1802,7 @@ const handleGetWallet = async (req: Request) => {
       { headers: { ...authHeaders(true) } },
     ),
     fetch(
-      `${SUPABASE_URL}/rest/v1/wallet_withdrawals?creator_id=eq.${user.id}&select=id,amount_paise,status,account_holder,account_number_last4,ifsc,upi_id,created_at,processed_at&order=created_at.desc&limit=50`,
+      `${SUPABASE_URL}/rest/v1/wallet_withdrawals?creator_id=eq.${user.id}&select=id,amount_paise,status,account_holder,account_number_last4,ifsc,upi_id,created_at,processed_at,transfer_txn_id&order=created_at.desc&limit=50`,
       { headers: { ...authHeaders(true) } },
     ),
     fetch(
@@ -1816,17 +1821,21 @@ const handleGetWallet = async (req: Request) => {
   const withdrawals = wdRes.ok ? await wdRes.json().catch(() => []) : []
 
   let lifetimePaise = Number(lifetimeRes.ok ? await lifetimeRes.json().catch(() => 0) : 0) || 0
+  let withdrawablePaise = Number(withdrawableRes.ok ? await withdrawableRes.json().catch(() => 0) : 0) || 0
   if (!lifetimeRes.ok) {
-    // Fallback if RPC not yet applied: sum display rows only (incomplete).
     for (const sale of salesRows) {
       lifetimePaise += Number(sale.amount_paise || Math.round(Number(sale.amount || 0) * 100))
     }
   }
+  if (!withdrawableRes.ok) withdrawablePaise = lifetimePaise
   let reservedPaise = 0
   for (const w of Array.isArray(withdrawals) ? withdrawals : []) {
-    if (w.status === 'pending' || w.status === 'paid') reservedPaise += Number(w.amount_paise || 0)
+    if (w.status === 'pending' || w.status === 'accepted' || w.status === 'paid') {
+      reservedPaise += Number(w.amount_paise || 0)
+    }
   }
-  const availablePaise = Math.max(0, lifetimePaise - reservedPaise)
+  const availablePaise = Math.max(0, withdrawablePaise - reservedPaise)
+  const heldPaise = Math.max(0, lifetimePaise - withdrawablePaise)
   const salesCountHeader = (countRes.headers.get('content-range') || '').split('/')[1]
   const salesCount = salesCountHeader && salesCountHeader !== '*'
     ? Number(salesCountHeader) || salesRows.length
@@ -1848,11 +1857,16 @@ const handleGetWallet = async (req: Request) => {
   const sales = salesRows.map((s: Record<string, unknown>) => {
     const paise = Number(s.amount_paise || Math.round(Number(s.amount || 0) * 100))
     const post = postMap[String(s.post_id)] || { public_id: '', caption: '' }
+    const paidAt = s.paid_at ? new Date(String(s.paid_at)).getTime() : 0
+    const unlocksAt = paidAt ? new Date(paidAt + 24 * 60 * 60 * 1000).toISOString() : null
+    const withdrawable = paidAt > 0 && Date.now() >= paidAt + 24 * 60 * 60 * 1000
     return {
       id: s.id,
       amount: paise / 100,
       amount_paise: paise,
       paid_at: s.paid_at,
+      withdrawable,
+      unlocks_at: unlocksAt,
       post_public_id: post.public_id,
       caption: post.caption,
     }
@@ -1866,8 +1880,11 @@ const handleGetWallet = async (req: Request) => {
     available_paise: availablePaise,
     lifetime_earnings: lifetimePaise / 100,
     lifetime_paise: lifetimePaise,
+    held_balance: heldPaise / 100,
+    held_paise: heldPaise,
     sales_count: salesCount,
     min_withdraw: 100,
+    withdraw_hold_hours: 24,
     sales,
     withdrawals: Array.isArray(withdrawals) ? withdrawals.map((w: Record<string, unknown>) => ({
       ...w,
@@ -1950,20 +1967,27 @@ const handleAdminWalletWithdraw = async (req: Request) => {
 
   const body = await parseJson(req)
   const id = typeof body.withdrawal_id === 'string' ? body.withdrawal_id.trim() : ''
-  const status = body.status === 'paid' || body.status === 'rejected' ? body.status : ''
+  const status = body.status === 'paid' || body.status === 'rejected' || body.status === 'accepted'
+    ? body.status
+    : ''
   const note = typeof body.note === 'string' ? body.note.trim().slice(0, 500) : ''
   if (!/^[0-9a-f-]{36}$/i.test(id) || !status) {
-    return jsonResponse({ error: 'withdrawal_id and status (paid|rejected) required' }, 400, {}, [], origin)
+    return jsonResponse({ error: 'withdrawal_id and status required' }, 400, {}, [], origin)
   }
 
-  const update: Record<string, unknown> = {
-    status,
-    processed_at: new Date().toISOString(),
-  }
+  const update: Record<string, unknown> = { status }
+  if (status === 'accepted') update.accepted_at = new Date().toISOString()
+  if (status === 'paid' || status === 'rejected') update.processed_at = new Date().toISOString()
   if (note) update.note = note
 
+  const filter = status === 'accepted'
+    ? `id=eq.${id}&status=eq.pending`
+    : status === 'paid'
+    ? `id=eq.${id}&status=in.(pending,accepted)`
+    : `id=eq.${id}&status=in.(pending,accepted)`
+
   const res = await fetch(
-    `${SUPABASE_URL}/rest/v1/wallet_withdrawals?id=eq.${id}&status=eq.pending`,
+    `${SUPABASE_URL}/rest/v1/wallet_withdrawals?${filter}`,
     {
       method: 'PATCH',
       headers: { ...authHeaders(true), Prefer: 'return=representation' },
@@ -1976,9 +2000,118 @@ const handleAdminWalletWithdraw = async (req: Request) => {
   }
   const rows = await res.json().catch(() => [])
   if (!Array.isArray(rows) || !rows.length) {
-    return jsonResponse({ error: 'Pending withdrawal not found' }, 404, {}, [], origin)
+    return jsonResponse({ error: 'Withdrawal not found or already processed' }, 404, {}, [], origin)
   }
   return jsonResponse({ status: 'updated', withdrawal: rows[0] }, 200, {}, [], origin)
+}
+
+const uploadAdminSlip = async (
+  withdrawalId: string,
+  base64: string,
+  contentType: string,
+): Promise<{ ok: boolean; path?: string; error?: string }> => {
+  const allowed: Record<string, string> = {
+    'image/jpeg': 'jpg',
+    'image/jpg': 'jpg',
+    'image/png': 'png',
+    'image/webp': 'webp',
+    'application/pdf': 'pdf',
+  }
+  const ext = allowed[contentType]
+  if (!ext) return { ok: false, error: 'Slip must be JPG, PNG, WEBP, or PDF' }
+  const cleaned = base64.includes(',') ? base64.split(',').pop() as string : base64
+  let bytes: Uint8Array
+  try {
+    const binary = atob(cleaned)
+    bytes = new Uint8Array(binary.length)
+    for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i)
+  } catch {
+    return { ok: false, error: 'Invalid slip data' }
+  }
+  if (bytes.byteLength > 5 * 1024 * 1024) return { ok: false, error: 'Slip exceeds 5MB' }
+  const path = `${withdrawalId}/slip.${ext}`
+  const uploadRes = await fetch(`${SUPABASE_URL}/storage/v1/object/admin-slips/${path}`, {
+    method: 'POST',
+    headers: {
+      apikey: SERVICE_ROLE_KEY,
+      Authorization: `Bearer ${SERVICE_ROLE_KEY}`,
+      'Content-Type': contentType,
+      'x-upsert': 'true',
+    },
+    body: bytes,
+  })
+  if (!uploadRes.ok) {
+    console.error('Slip upload failed:', await uploadRes.text().catch(() => ''))
+    return { ok: false, error: 'Failed to upload slip' }
+  }
+  return { ok: true, path }
+}
+
+const signAdminSlip = async (path: string) => {
+  if (!path) return ''
+  const res = await fetch(`${SUPABASE_URL}/storage/v1/object/sign/admin-slips`, {
+    method: 'POST',
+    headers: { ...authHeaders(true) },
+    body: JSON.stringify({ expiresIn: 600, paths: [path] }),
+  })
+  if (!res.ok) return ''
+  const rows = await res.json().catch(() => [])
+  const row = Array.isArray(rows) ? rows[0] : null
+  return row?.signedURL ? `${SUPABASE_URL}/storage/v1${row.signedURL}` : ''
+}
+
+const handleAdminCompleteWithdrawal = async (req: Request) => {
+  const origin = req.headers.get('origin')
+  if (!await requireAdmin(req)) return jsonResponse({ error: 'Unauthorized' }, 401, {}, [], origin)
+
+  const body = await parseJson(req)
+  const id = typeof body.withdrawal_id === 'string' ? body.withdrawal_id.trim() : ''
+  const txnId = typeof body.transfer_txn_id === 'string' ? body.transfer_txn_id.trim().slice(0, 120) : ''
+  const amount = Number(body.transfer_amount)
+  const note = typeof body.note === 'string' ? body.note.trim().slice(0, 500) : ''
+  if (!/^[0-9a-f-]{36}$/i.test(id) || !txnId) {
+    return jsonResponse({ error: 'withdrawal_id and transfer_txn_id required' }, 400, {}, [], origin)
+  }
+  if (!Number.isFinite(amount) || amount <= 0) {
+    return jsonResponse({ error: 'Enter a valid transferred amount' }, 400, {}, [], origin)
+  }
+  const amountPaise = Math.round(amount * 100)
+
+  let slipPath = ''
+  if (typeof body.slip_base64 === 'string' && body.slip_base64) {
+    const contentType = typeof body.slip_content_type === 'string' ? body.slip_content_type : 'image/jpeg'
+    const uploaded = await uploadAdminSlip(id, body.slip_base64, contentType)
+    if (!uploaded.ok) return jsonResponse({ error: uploaded.error || 'Slip upload failed' }, 400, {}, [], origin)
+    slipPath = uploaded.path || ''
+  }
+
+  const update: Record<string, unknown> = {
+    status: 'paid',
+    processed_at: new Date().toISOString(),
+    transfer_txn_id: txnId,
+    transfer_amount_paise: amountPaise,
+  }
+  if (slipPath) update.transfer_slip_path = slipPath
+  if (note) update.note = note
+  if (!body.skip_accept) update.accepted_at = new Date().toISOString()
+
+  const res = await fetch(
+    `${SUPABASE_URL}/rest/v1/wallet_withdrawals?id=eq.${id}&status=in.(pending,accepted)`,
+    {
+      method: 'PATCH',
+      headers: { ...authHeaders(true), Prefer: 'return=representation' },
+      body: JSON.stringify(update),
+    },
+  )
+  if (!res.ok) {
+    console.error('Complete withdrawal failed:', await res.text().catch(() => ''))
+    return jsonResponse({ error: 'Failed to complete withdrawal' }, 500, {}, [], origin)
+  }
+  const rows = await res.json().catch(() => [])
+  if (!Array.isArray(rows) || !rows.length) {
+    return jsonResponse({ error: 'Withdrawal not found or already processed' }, 404, {}, [], origin)
+  }
+  return jsonResponse({ status: 'paid', withdrawal: rows[0] }, 200, {}, [], origin)
 }
 
 const handleAdminLogin = async (req: Request) => {
@@ -2065,25 +2198,89 @@ const handleAdminUsers = async (req: Request) => {
   const rows = await res.json().catch(() => [])
   const list = Array.isArray(rows) ? rows : []
   const creatorIds = list.filter((r) => r.role === 'creator').map((r) => r.id)
-  const profiles: Record<string, string> = {}
+  const profiles: Record<string, { username: string; avatar_url: string; full_name: string }> = {}
   if (creatorIds.length) {
     const profileRes = await fetch(
-      `${SUPABASE_URL}/rest/v1/profiles?id=in.(${creatorIds.join(',')})&select=id,username`,
+      `${SUPABASE_URL}/rest/v1/profiles?id=in.(${creatorIds.join(',')})&select=id,username,avatar_url,full_name`,
       { headers: { ...authHeaders(true) } },
     )
     const profileRows = profileRes.ok ? await profileRes.json().catch(() => []) : []
-    for (const p of Array.isArray(profileRows) ? profileRows : []) profiles[p.id] = p.username || ''
+    for (const p of Array.isArray(profileRows) ? profileRows : []) {
+      profiles[p.id] = {
+        username: p.username || '',
+        avatar_url: p.avatar_url || '',
+        full_name: p.full_name || '',
+      }
+    }
   }
 
   return jsonResponse({
     users: list.map((row) => ({
       id: row.id,
       role: row.role,
-      name: row.name || '',
+      name: row.name || profiles[row.id]?.full_name || '',
       email: row.email || '',
-      username: profiles[row.id] || '',
+      username: profiles[row.id]?.username || '',
+      avatar_url: profiles[row.id]?.avatar_url || '',
       created_at: row.created_at,
     })),
+  }, 200, {}, [], origin)
+}
+
+const handleAdminUserDetail = async (req: Request, url: URL) => {
+  const origin = req.headers.get('origin')
+  if (!await requireAdmin(req)) return jsonResponse({ error: 'Unauthorized' }, 401, {}, [], origin)
+  const id = url.searchParams.get('id') || ''
+  if (!/^[0-9a-f-]{36}$/i.test(id)) return jsonResponse({ error: 'Invalid user id' }, 400, {}, [], origin)
+
+  const accountRes = await fetch(
+    `${SUPABASE_URL}/rest/v1/user_accounts?id=eq.${id}&select=*&limit=1`,
+    { headers: { ...authHeaders(true) } },
+  )
+  const accounts = accountRes.ok ? await accountRes.json().catch(() => []) : []
+  const account = Array.isArray(accounts) && accounts.length ? accounts[0] : null
+  if (!account) return jsonResponse({ error: 'User not found' }, 404, {}, [], origin)
+
+  const [profileRes, postsCountRes, followersCountRes, lifetimeRes] = await Promise.all([
+    fetch(
+      `${SUPABASE_URL}/rest/v1/profiles?id=eq.${id}&select=id,username,full_name,avatar_url,bio,created_at&limit=1`,
+      { headers: { ...authHeaders(true) } },
+    ),
+    fetch(
+      `${SUPABASE_URL}/rest/v1/posts?creator_id=eq.${id}&select=id`,
+      { method: 'HEAD', headers: { ...authHeaders(true), Prefer: 'count=exact', Range: '0-0' } },
+    ),
+    fetch(
+      `${SUPABASE_URL}/rest/v1/follows?following_id=eq.${id}&select=follower_id`,
+      { method: 'HEAD', headers: { ...authHeaders(true), Prefer: 'count=exact', Range: '0-0' } },
+    ),
+    fetch(`${SUPABASE_URL}/rest/v1/rpc/wallet_lifetime_paise`, {
+      method: 'POST',
+      headers: { ...authHeaders(true) },
+      body: JSON.stringify({ p_creator_id: id }),
+    }),
+  ])
+  const profiles = profileRes.ok ? await profileRes.json().catch(() => []) : []
+  const profile = Array.isArray(profiles) && profiles.length ? profiles[0] : null
+  const postsCount = Number((postsCountRes.headers.get('content-range') || '').split('/')[1] || 0) || 0
+  const followersCount = Number((followersCountRes.headers.get('content-range') || '').split('/')[1] || 0) || 0
+  const lifetimePaise = Number(lifetimeRes.ok ? await lifetimeRes.json().catch(() => 0) : 0) || 0
+
+  return jsonResponse({
+    user: {
+      id: account.id,
+      role: account.role,
+      name: account.name || profile?.full_name || '',
+      email: account.email || '',
+      username: profile?.username || '',
+      avatar_url: profile?.avatar_url || '',
+      bio: profile?.bio || '',
+      post_count: postsCount,
+      followers_count: followersCount,
+      joined_at: account.created_at,
+      total_earnings: lifetimePaise / 100,
+      total_earnings_paise: lifetimePaise,
+    },
   }, 200, {}, [], origin)
 }
 
@@ -2123,6 +2320,38 @@ const handleAdminPosts = async (req: Request) => {
       view_count: Number(p.view_count) || 0,
       created_at: p.created_at,
     })),
+  }, 200, {}, [], origin)
+}
+
+const handleAdminViewPost = async (req: Request, url: URL) => {
+  const origin = req.headers.get('origin')
+  if (!await requireAdmin(req)) return jsonResponse({ error: 'Unauthorized' }, 401, {}, [], origin)
+  const post = await fetchPostByPublicId(url.searchParams.get('public_id') || '')
+  if (!post) return jsonResponse({ error: 'Post not found' }, 404, {}, [], origin)
+
+  const paths = Array.isArray(post.media_paths) ? post.media_paths as string[] : []
+  const signed = await signMediaPaths(paths, 300)
+  const mediaUrls = paths.map((path: string) => signed[path] || '').filter(Boolean)
+  const owner = await fetchProfileBrief(post.creator_id)
+
+  return jsonResponse({
+    post: {
+      public_id: post.public_id,
+      caption: post.caption || '',
+      media_type: post.media_type,
+      media_urls: mediaUrls,
+      is_paid: post.is_paid === true,
+      price: Number(post.price) || 0,
+      like_count: Number(post.like_count) || 0,
+      view_count: Number(post.view_count) || 0,
+      created_at: post.created_at,
+      creator: {
+        id: post.creator_id,
+        username: owner?.username || '',
+        full_name: owner?.full_name || '',
+        avatar_url: owner?.avatar_url || '',
+      },
+    },
   }, 200, {}, [], origin)
 }
 
@@ -2258,24 +2487,190 @@ const handleAdminWithdrawals = async (req: Request) => {
   const list = Array.isArray(rows) ? rows : []
   const creatorIds = [...new Set(list.map((w) => w.creator_id).filter(Boolean))]
   const accounts: Record<string, { name: string; email: string }> = {}
+  const profiles: Record<string, { username: string; avatar_url: string }> = {}
+  const payouts: Record<string, Record<string, unknown>> = {}
   if (creatorIds.length) {
-    const accountRes = await fetch(
-      `${SUPABASE_URL}/rest/v1/user_accounts?id=in.(${creatorIds.join(',')})&select=id,name,email`,
+    const [accountRes, profileRes, payoutRes] = await Promise.all([
+      fetch(
+        `${SUPABASE_URL}/rest/v1/user_accounts?id=in.(${creatorIds.join(',')})&select=id,name,email`,
+        { headers: { ...authHeaders(true) } },
+      ),
+      fetch(
+        `${SUPABASE_URL}/rest/v1/profiles?id=in.(${creatorIds.join(',')})&select=id,username,avatar_url`,
+        { headers: { ...authHeaders(true) } },
+      ),
+      fetch(
+        `${SUPABASE_URL}/rest/v1/payout_accounts?user_id=in.(${creatorIds.join(',')})&select=*`,
+        { headers: { ...authHeaders(true) } },
+      ),
+    ])
+    for (const a of accountRes.ok ? await accountRes.json().catch(() => []) : []) {
+      accounts[a.id] = { name: a.name || '', email: a.email || '' }
+    }
+    for (const p of profileRes.ok ? await profileRes.json().catch(() => []) : []) {
+      profiles[p.id] = { username: p.username || '', avatar_url: p.avatar_url || '' }
+    }
+    for (const p of payoutRes.ok ? await payoutRes.json().catch(() => []) : []) {
+      payouts[p.user_id] = p
+    }
+  }
+
+  const withdrawals = await Promise.all(list.map(async (w) => {
+    const slipUrl = w.transfer_slip_path ? await signAdminSlip(String(w.transfer_slip_path)) : ''
+    const payout = payouts[w.creator_id]
+    return {
+      ...w,
+      amount: Number(w.amount_paise || 0) / 100,
+      transfer_amount: w.transfer_amount_paise != null ? Number(w.transfer_amount_paise) / 100 : null,
+      transfer_slip_url: slipUrl,
+      creator_name: accounts[w.creator_id]?.name || '',
+      creator_email: accounts[w.creator_id]?.email || '',
+      creator_username: profiles[w.creator_id]?.username || '',
+      creator_avatar_url: profiles[w.creator_id]?.avatar_url || '',
+      bank: payout ? {
+        account_holder: payout.account_holder || w.account_holder,
+        account_number_masked: maskAccountNumber(String(payout.account_number || '')),
+        account_number_last4: String(payout.account_number || w.account_number_last4 || '').slice(-4),
+        ifsc: payout.ifsc || w.ifsc,
+        upi_id: payout.upi_id || w.upi_id || '',
+      } : {
+        account_holder: w.account_holder,
+        account_number_masked: `••••${w.account_number_last4}`,
+        account_number_last4: w.account_number_last4,
+        ifsc: w.ifsc,
+        upi_id: w.upi_id || '',
+      },
+    }
+  }))
+
+  return jsonResponse({ withdrawals }, 200, {}, [], origin)
+}
+
+const handleAdminPayments = async (req: Request) => {
+  const origin = req.headers.get('origin')
+  if (!await requireAdmin(req)) return jsonResponse({ error: 'Unauthorized' }, 401, {}, [], origin)
+
+  const res = await fetch(
+    `${SUPABASE_URL}/rest/v1/post_purchases?status=eq.paid&select=id,amount,amount_paise,currency,paid_at,verified_at,razorpay_order_id,razorpay_payment_id,post_id,user_id,creator_id,created_at&order=paid_at.desc&limit=300`,
+    { headers: { ...authHeaders(true) } },
+  )
+  if (!res.ok) return jsonResponse({ error: 'Failed to load payments' }, 500, {}, [], origin)
+  const rows = await res.json().catch(() => [])
+  const list = Array.isArray(rows) ? rows : []
+  const postIds = [...new Set(list.map((r) => r.post_id).filter(Boolean))]
+  const userIds = [...new Set(list.flatMap((r) => [r.user_id, r.creator_id]).filter(Boolean))]
+  const posts: Record<string, { public_id: string; caption: string }> = {}
+  const profiles: Record<string, string> = {}
+  const accounts: Record<string, string> = {}
+  if (postIds.length) {
+    const postsRes = await fetch(
+      `${SUPABASE_URL}/rest/v1/posts?id=in.(${postIds.join(',')})&select=id,public_id,caption`,
       { headers: { ...authHeaders(true) } },
     )
-    const accountRows = accountRes.ok ? await accountRes.json().catch(() => []) : []
-    for (const a of Array.isArray(accountRows) ? accountRows : []) {
-      accounts[a.id] = { name: a.name || '', email: a.email || '' }
+    for (const p of postsRes.ok ? await postsRes.json().catch(() => []) : []) {
+      posts[p.id] = { public_id: p.public_id, caption: p.caption || '' }
+    }
+  }
+  if (userIds.length) {
+    const [profileRes, accountRes] = await Promise.all([
+      fetch(
+        `${SUPABASE_URL}/rest/v1/profiles?id=in.(${userIds.join(',')})&select=id,username`,
+        { headers: { ...authHeaders(true) } },
+      ),
+      fetch(
+        `${SUPABASE_URL}/rest/v1/user_accounts?id=in.(${userIds.join(',')})&select=id,name,email`,
+        { headers: { ...authHeaders(true) } },
+      ),
+    ])
+    for (const p of profileRes.ok ? await profileRes.json().catch(() => []) : []) {
+      profiles[p.id] = p.username || ''
+    }
+    for (const a of accountRes.ok ? await accountRes.json().catch(() => []) : []) {
+      accounts[a.id] = a.name || a.email || ''
     }
   }
 
   return jsonResponse({
-    withdrawals: list.map((w) => ({
-      ...w,
-      amount: Number(w.amount_paise || 0) / 100,
-      creator_name: accounts[w.creator_id]?.name || '',
-      creator_email: accounts[w.creator_id]?.email || '',
-    })),
+    payments: list.map((r) => {
+      const paise = Number(r.amount_paise || Math.round(Number(r.amount || 0) * 100))
+      const paidAt = r.paid_at ? new Date(String(r.paid_at)).getTime() : 0
+      return {
+        id: r.id,
+        amount: paise / 100,
+        amount_paise: paise,
+        currency: r.currency || 'INR',
+        paid_at: r.paid_at,
+        withdrawable: paidAt > 0 && Date.now() >= paidAt + 24 * 60 * 60 * 1000,
+        unlocks_at: paidAt ? new Date(paidAt + 24 * 60 * 60 * 1000).toISOString() : null,
+        razorpay_order_id: r.razorpay_order_id || '',
+        razorpay_payment_id: r.razorpay_payment_id || '',
+        post_public_id: posts[r.post_id]?.public_id || '',
+        post_caption: posts[r.post_id]?.caption || '',
+        buyer_name: accounts[r.user_id] || profiles[r.user_id] || '',
+        creator_username: profiles[r.creator_id] || '',
+        creator_id: r.creator_id,
+      }
+    }),
+  }, 200, {}, [], origin)
+}
+
+const handleAdminSettlements = async (req: Request) => {
+  const origin = req.headers.get('origin')
+  if (!await requireAdmin(req)) return jsonResponse({ error: 'Unauthorized' }, 401, {}, [], origin)
+
+  const creatorsRes = await fetch(
+    `${SUPABASE_URL}/rest/v1/user_accounts?role=eq.creator&select=id,name,email&order=created_at.desc&limit=200`,
+    { headers: { ...authHeaders(true) } },
+  )
+  if (!creatorsRes.ok) return jsonResponse({ error: 'Failed to load creators' }, 500, {}, [], origin)
+  const creators = await creatorsRes.json().catch(() => [])
+  const list = Array.isArray(creators) ? creators : []
+  if (!list.length) return jsonResponse({ settlements: [] }, 200, {}, [], origin)
+
+  const ids = list.map((c) => c.id)
+  const [profileRes, purchasesRes, wdRes] = await Promise.all([
+    fetch(
+      `${SUPABASE_URL}/rest/v1/profiles?id=in.(${ids.join(',')})&select=id,username,avatar_url,full_name`,
+      { headers: { ...authHeaders(true) } },
+    ),
+    fetch(
+      `${SUPABASE_URL}/rest/v1/post_purchases?creator_id=in.(${ids.join(',')})&status=eq.paid&select=creator_id,amount,amount_paise`,
+      { headers: { ...authHeaders(true) } },
+    ),
+    fetch(
+      `${SUPABASE_URL}/rest/v1/wallet_withdrawals?creator_id=in.(${ids.join(',')})&status=eq.paid&select=creator_id,amount_paise`,
+      { headers: { ...authHeaders(true) } },
+    ),
+  ])
+  const profiles: Record<string, { username: string; avatar_url: string; full_name: string }> = {}
+  for (const p of profileRes.ok ? await profileRes.json().catch(() => []) : []) {
+    profiles[p.id] = { username: p.username || '', avatar_url: p.avatar_url || '', full_name: p.full_name || '' }
+  }
+  const earnings: Record<string, number> = {}
+  for (const row of purchasesRes.ok ? await purchasesRes.json().catch(() => []) : []) {
+    const paise = Number(row.amount_paise || Math.round(Number(row.amount || 0) * 100))
+    earnings[row.creator_id] = (earnings[row.creator_id] || 0) + paise
+  }
+  const settled: Record<string, number> = {}
+  for (const row of wdRes.ok ? await wdRes.json().catch(() => []) : []) {
+    settled[row.creator_id] = (settled[row.creator_id] || 0) + Number(row.amount_paise || 0)
+  }
+
+  return jsonResponse({
+    settlements: list.map((c) => {
+      const total = earnings[c.id] || 0
+      const paid = settled[c.id] || 0
+      return {
+        creator_id: c.id,
+        name: c.name || profiles[c.id]?.full_name || '',
+        email: c.email || '',
+        username: profiles[c.id]?.username || '',
+        avatar_url: profiles[c.id]?.avatar_url || '',
+        total_earnings: total / 100,
+        total_settled: paid / 100,
+        balance_to_settle: Math.max(0, total - paid) / 100,
+      }
+    }).sort((a, b) => b.balance_to_settle - a.balance_to_settle),
   }, 200, {}, [], origin)
 }
 
@@ -3838,13 +4233,18 @@ const routeRequest = async (req: Request) => {
   if (isRoute('admin-login') && req.method === 'POST') return handleAdminLogin(req)
   if (isRoute('admin/stats') && req.method === 'GET') return handleAdminStats(req)
   if (isRoute('admin/users') && req.method === 'GET') return handleAdminUsers(req)
+  if (isRoute('admin/user') && req.method === 'GET') return handleAdminUserDetail(req, url)
   if (isRoute('admin/posts') && req.method === 'GET') return handleAdminPosts(req)
+  if (isRoute('admin/post') && req.method === 'GET') return handleAdminViewPost(req, url)
   if (isRoute('admin/posts/delete') && req.method === 'POST') return handleAdminDeletePost(req)
   if (isRoute('admin/support-tickets') && req.method === 'GET') return handleAdminSupportTickets(req)
   if (isRoute('admin/support-tickets/update') && req.method === 'POST') return handleAdminUpdateSupportTicket(req)
   if (isRoute('admin/reports/posts') && req.method === 'GET') return handleAdminPostReports(req)
   if (isRoute('admin/reports/users') && req.method === 'GET') return handleAdminUserReports(req)
   if (isRoute('admin/withdrawals') && req.method === 'GET') return handleAdminWithdrawals(req)
+  if (isRoute('admin/withdrawals/complete') && req.method === 'POST') return handleAdminCompleteWithdrawal(req)
+  if (isRoute('admin/payments') && req.method === 'GET') return handleAdminPayments(req)
+  if (isRoute('admin/settlements') && req.method === 'GET') return handleAdminSettlements(req)
   if (isRoute('login') && req.method === 'POST') return handleLogin(req)
   if (isRoute('user-login') && req.method === 'POST') return handleUserLogin(req)
   if (isRoute('user-signup') && req.method === 'POST') return handleUserSignup(req)

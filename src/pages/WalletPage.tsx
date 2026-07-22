@@ -19,6 +19,7 @@ export default function WalletPage() {
   const [withdrawals, setWithdrawals] = useState<WalletWithdrawal[]>([]);
   const [available, setAvailable] = useState(0);
   const [lifetime, setLifetime] = useState(0);
+  const [held, setHeld] = useState(0);
   const [salesCount, setSalesCount] = useState(0);
   const [minWithdraw, setMinWithdraw] = useState(100);
 
@@ -40,6 +41,7 @@ export default function WalletPage() {
     }
     setAvailable(response.available_balance || 0);
     setLifetime(response.lifetime_earnings || 0);
+    setHeld(response.held_balance || 0);
     setSalesCount(response.sales_count || 0);
     setMinWithdraw(response.min_withdraw || 100);
     setSales(response.sales || []);
@@ -138,7 +140,10 @@ export default function WalletPage() {
             {isLoading ? "…" : formatInr(available)}
           </div>
           <div className="flex items-center justify-between gap-3">
-            <div className="text-xs text-rose-100">Minimum withdrawal ₹{minWithdraw}</div>
+            <div className="text-xs text-rose-100">
+              Min ₹{minWithdraw}
+              {held > 0 ? ` · ₹${held.toFixed(0)} unlocking in 24h` : " · sales unlock after 24h"}
+            </div>
             <button
               onClick={handleWithdraw}
               disabled={isLoading || isWithdrawing || available < minWithdraw}

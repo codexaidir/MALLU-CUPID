@@ -215,9 +215,10 @@ The application uses URL-based pagination (React Router) with the following rout
 ## Admin console
 
 - Migration `020`: `user_accounts.role` includes `admin`.
+- Migration `021`: 24h withdrawal hold (`wallet_withdrawable_paise`); withdrawal statuses `pending`/`accepted`/`paid`/`rejected`; transfer proof fields + `admin-slips` bucket.
 - Login: `https://www.mallucupid.com/adminlogin` (email + password only; no signup/reset).
-- Dashboard: `https://www.mallucupid.com/admin<admin-user-uuid>` (cookie session, role `admin`).
-- Endpoints (admin cookie session): `POST /admin-login`; `GET /admin/stats`, `/admin/users`, `/admin/posts`, `/admin/support-tickets`, `/admin/reports/posts`, `/admin/reports/users`, `/admin/withdrawals`; `POST /admin/posts/delete`, `/admin/support-tickets/update`, `/admin-wallet-withdraw`.
+- Dashboard: `https://www.mallucupid.com/admin<admin-user-uuid>` — Overview, Users (profile detail), Posts (view/delete media), Wallet & Payments, Creator Settlements, Withdrawals (view/accept/complete with txn ID + slip), Help, Reports.
+- Creators can withdraw only from sales paid ≥24 hours ago.
 - Bootstrap admin: `node scripts/create-admin-user.mjs` (requires `SUPABASE_SERVICE_ROLE_KEY`).
 
 

@@ -180,8 +180,10 @@ export interface WalletWithdrawal {
 export interface WalletSummary {
   available_balance: number;
   lifetime_earnings: number;
+  held_balance?: number;
   sales_count: number;
   min_withdraw: number;
+  withdraw_hold_hours?: number;
   sales?: WalletSale[];
   withdrawals?: WalletWithdrawal[];
   account?: PayoutAccount | null;

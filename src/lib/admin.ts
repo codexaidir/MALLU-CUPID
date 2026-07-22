@@ -1,6 +1,14 @@
 import { apiGet, apiPost } from "./auth";
 
-export type AdminTab = "overview" | "users" | "posts" | "help" | "reports" | "withdrawals";
+export type AdminTab =
+  | "overview"
+  | "users"
+  | "posts"
+  | "payments"
+  | "settlements"
+  | "help"
+  | "reports"
+  | "withdrawals";
 
 export interface AdminStats {
   users: number;
@@ -18,7 +26,22 @@ export interface AdminUserRow {
   name: string;
   email: string;
   username: string;
+  avatar_url?: string;
   created_at: string;
+}
+
+export interface AdminUserDetail {
+  id: string;
+  role: string;
+  name: string;
+  email: string;
+  username: string;
+  avatar_url: string;
+  bio: string;
+  post_count: number;
+  followers_count: number;
+  joined_at: string;
+  total_earnings: number;
 }
 
 export interface AdminPostRow {
@@ -33,6 +56,19 @@ export interface AdminPostRow {
   like_count: number;
   view_count: number;
   created_at: string;
+}
+
+export interface AdminPostView {
+  public_id: string;
+  caption: string;
+  media_type: string;
+  media_urls: string[];
+  is_paid: boolean;
+  price: number;
+  like_count: number;
+  view_count: number;
+  created_at: string;
+  creator: { id: string; username: string; full_name: string; avatar_url: string };
 }
 
 export interface AdminTicketRow {
@@ -72,6 +108,8 @@ export interface AdminWithdrawalRow {
   creator_id: string;
   creator_name: string;
   creator_email: string;
+  creator_username: string;
+  creator_avatar_url: string;
   amount_paise: number;
   amount: number;
   status: string;
@@ -80,8 +118,45 @@ export interface AdminWithdrawalRow {
   ifsc: string;
   upi_id: string;
   note: string;
+  transfer_txn_id?: string;
+  transfer_amount?: number | null;
+  transfer_slip_url?: string;
+  accepted_at?: string | null;
   created_at: string;
   processed_at: string | null;
+  bank?: {
+    account_holder: string;
+    account_number_masked: string;
+    account_number_last4: string;
+    ifsc: string;
+    upi_id: string;
+  };
+}
+
+export interface AdminPaymentRow {
+  id: string;
+  amount: number;
+  paid_at: string;
+  withdrawable: boolean;
+  unlocks_at: string | null;
+  razorpay_order_id: string;
+  razorpay_payment_id: string;
+  post_public_id: string;
+  post_caption: string;
+  buyer_name: string;
+  creator_username: string;
+  creator_id: string;
+}
+
+export interface AdminSettlementRow {
+  creator_id: string;
+  name: string;
+  email: string;
+  username: string;
+  avatar_url: string;
+  total_earnings: number;
+  total_settled: number;
+  balance_to_settle: number;
 }
 
 export async function adminLogin(email: string, password: string) {
@@ -96,8 +171,16 @@ export async function getAdminUsers(): Promise<{ users?: AdminUserRow[]; error?:
   return apiGet("/admin/users");
 }
 
+export async function getAdminUserDetail(id: string): Promise<{ user?: AdminUserDetail; error?: string }> {
+  return apiGet(`/admin/user?id=${encodeURIComponent(id)}`);
+}
+
 export async function getAdminPosts(): Promise<{ posts?: AdminPostRow[]; error?: string }> {
   return apiGet("/admin/posts");
+}
+
+export async function getAdminPostView(publicId: string): Promise<{ post?: AdminPostView; error?: string }> {
+  return apiGet(`/admin/post?public_id=${encodeURIComponent(publicId)}`);
 }
 
 export async function adminDeletePost(publicId: string) {
@@ -130,8 +213,27 @@ export async function getAdminWithdrawals(): Promise<{ withdrawals?: AdminWithdr
 
 export async function adminProcessWithdrawal(
   withdrawalId: string,
-  status: "paid" | "rejected",
+  status: "paid" | "rejected" | "accepted",
   note = "",
 ) {
   return apiPost("/admin-wallet-withdraw", { withdrawal_id: withdrawalId, status, note });
+}
+
+export async function adminCompleteWithdrawal(payload: {
+  withdrawal_id: string;
+  transfer_txn_id: string;
+  transfer_amount: number;
+  note?: string;
+  slip_base64?: string;
+  slip_content_type?: string;
+}) {
+  return apiPost("/admin/withdrawals/complete", payload);
+}
+
+export async function getAdminPayments(): Promise<{ payments?: AdminPaymentRow[]; error?: string }> {
+  return apiGet("/admin/payments");
+}
+
+export async function getAdminSettlements(): Promise<{ settlements?: AdminSettlementRow[]; error?: string }> {
+  return apiGet("/admin/settlements");
 }
