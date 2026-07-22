@@ -14,6 +14,52 @@ if (!SUPABASE_URL || !SERVICE_ROLE_KEY || !ANON_KEY) {
   throw new Error('Missing SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, or SUPABASE_ANON_KEY')
 }
 
+const generateOtp = () => {
+  const bytes = new Uint8Array(4)
+  crypto.getRandomValues(bytes)
+  const n = ((bytes[0] << 24) | (bytes[1] << 16) | (bytes[2] << 8) | bytes[3]) >>> 0
+  return String(100000 + (n % 900000))
+}
+
+const bytesToB64 = (bytes: Uint8Array) => btoa(String.fromCharCode(...bytes))
+const b64ToBytes = (value: string) => Uint8Array.from(atob(value), (c) => c.charCodeAt(0))
+
+const sealSecret = async (plain: string) => {
+  const keyMaterial = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(SERVICE_ROLE_KEY))
+  const key = await crypto.subtle.importKey('raw', keyMaterial, 'AES-GCM', false, ['encrypt'])
+  const iv = crypto.getRandomValues(new Uint8Array(12))
+  const cipher = new Uint8Array(await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, key, new TextEncoder().encode(plain)))
+  return `${bytesToB64(iv)}.${bytesToB64(cipher)}`
+}
+
+const openSecret = async (sealed: string) => {
+  const [ivB64, cipherB64] = sealed.split('.')
+  if (!ivB64 || !cipherB64) return ''
+  const keyMaterial = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(SERVICE_ROLE_KEY))
+  const key = await crypto.subtle.importKey('raw', keyMaterial, 'AES-GCM', false, ['decrypt'])
+  const plain = await crypto.subtle.decrypt({ name: 'AES-GCM', iv: b64ToBytes(ivB64) }, key, b64ToBytes(cipherB64))
+  return new TextDecoder().decode(plain)
+}
+
+const resolveStoredPassword = async (payload: Record<string, unknown> | null | undefined) => {
+  if (!payload) return ''
+  if (typeof payload.password_sealed === 'string' && payload.password_sealed) {
+    return openSecret(payload.password_sealed)
+  }
+  // Legacy rows may still hold plaintext until used/expired.
+  return typeof payload.password === 'string' ? payload.password : ''
+}
+
+const MAX_OTP_ATTEMPTS = 8
+
+const bumpOtpAttempts = async (id: string, current: number) => {
+  await fetch(`${SUPABASE_URL}/rest/v1/email_verifications?id=eq.${id}`, {
+    method: 'PATCH',
+    headers: { ...authHeaders(true), Prefer: 'return=minimal' },
+    body: JSON.stringify({ attempts: (current || 0) + 1 }),
+  })
+}
+
 const defaultHeaders = {
   'Content-Type': 'application/json',
 }
@@ -65,6 +111,60 @@ const authHeaders = (useService = false) => ({
   apikey: useService ? SERVICE_ROLE_KEY : ANON_KEY,
   Authorization: `Bearer ${useService ? SERVICE_ROLE_KEY : ANON_KEY}`,
 })
+
+const clientIp = (req: Request) =>
+  (req.headers.get('x-forwarded-for') || '').split(',')[0].trim() ||
+  req.headers.get('cf-connecting-ip') ||
+  'unknown'
+
+/** Sliding-window rate limit stored in DB (edge-only table). */
+const enforceRateLimit = async (key: string, maxHits: number, windowMs: number) => {
+  const now = Date.now()
+  const res = await fetch(
+    `${SUPABASE_URL}/rest/v1/auth_rate_limits?key=eq.${encodeURIComponent(key)}&select=*&limit=1`,
+    { headers: { ...authHeaders(true) } },
+  )
+  const rows = res.ok ? await res.json().catch(() => []) : []
+  const row = Array.isArray(rows) && rows.length ? rows[0] : null
+  const windowStart = row ? new Date(row.window_start).getTime() : 0
+  if (!row || now - windowStart > windowMs) {
+    await fetch(`${SUPABASE_URL}/rest/v1/auth_rate_limits?on_conflict=key`, {
+      method: 'POST',
+      headers: { ...authHeaders(true), Prefer: 'resolution=merge-duplicates,return=minimal' },
+      body: JSON.stringify([{ key, hit_count: 1, window_start: new Date(now).toISOString() }]),
+    })
+    return { ok: true as const }
+  }
+  if ((row.hit_count || 0) >= maxHits) {
+    return { ok: false as const, error: 'Too many requests. Try again later.' }
+  }
+  await fetch(`${SUPABASE_URL}/rest/v1/auth_rate_limits?key=eq.${encodeURIComponent(key)}`, {
+    method: 'PATCH',
+    headers: { ...authHeaders(true), Prefer: 'return=minimal' },
+    body: JSON.stringify({ hit_count: (row.hit_count || 0) + 1 }),
+  })
+  return { ok: true as const }
+}
+
+const maskAccountNumber = (value: string) => {
+  const digits = String(value || '').replace(/\D/g, '')
+  if (digits.length <= 4) return digits
+  return `••••${digits.slice(-4)}`
+}
+
+const publicPayoutAccount = (row: Record<string, unknown> | null) => {
+  if (!row) return null
+  const number = String(row.account_number || '')
+  return {
+    account_holder: row.account_holder || '',
+    account_number_last4: number.slice(-4),
+    account_number_masked: maskAccountNumber(number),
+    ifsc: row.ifsc || '',
+    upi_id: row.upi_id || '',
+    updated_at: row.updated_at || null,
+    has_account: Boolean(number),
+  }
+}
 
 const serializeCookies = (cookieHeader: string): Record<string, string> =>
   Object.fromEntries(
@@ -506,9 +606,15 @@ const isUsernameTaken = async (
   return Array.isArray(pending) && pending.length > 0
 }
 
+const normalizeEmail = (value: unknown) =>
+  typeof value === 'string' ? value.trim().toLowerCase() : ''
+const validEmail = (email: string) => /^\S+@\S+\.\S+$/.test(email)
+const validPassword = (password: string) => password.length >= 8 && password.length <= 128
+const validPublicSlug = (slug: string) => /^.{1,60}\d{5}$/.test(slug)
+
 const handleUsernameCheck = async (req: Request, url: URL) => {
   const origin = req.headers.get('origin')
-  const username = (url.searchParams.get('u') || '').trim()
+  const username = (url.searchParams.get('u') || '').trim().toLowerCase()
 
   const formatError = validateUsernameFormat(username)
   if (formatError) {
@@ -526,10 +632,17 @@ const handleUsernameCheck = async (req: Request, url: URL) => {
 const handleSignup = async (req: Request) => {
   const origin = req.headers.get('origin')
   const body = await parseJson(req)
-  const email = typeof body.email === 'string' ? body.email.trim() : ''
+  const email = normalizeEmail(body.email)
   const password = typeof body.password === 'string' ? body.password : ''
   const username = typeof body.username === 'string' ? body.username.trim().toLowerCase() : ''
-  if (!email || !password || !username) return jsonResponse({ error: 'Missing fields' }, 400, {}, [], origin)
+  if (!validEmail(email) || !password || !username) {
+    return jsonResponse({ error: 'Valid email, username, and password are required' }, 400, {}, [], origin)
+  }
+  const limited = await enforceRateLimit(`otp:ip:${clientIp(req)}`, 40, 15 * 60 * 1000)
+  if (!limited.ok) return jsonResponse({ error: limited.error }, 429, {}, [], origin)
+  const emailLimited = await enforceRateLimit(`otp:email:${email}`, 8, 15 * 60 * 1000)
+  if (!emailLimited.ok) return jsonResponse({ error: emailLimited.error }, 429, {}, [], origin)
+  if (!validPassword(password)) return jsonResponse({ error: 'Password must be 8-128 characters' }, 400, {}, [], origin)
 
   const formatError = validateUsernameFormat(username)
   if (formatError) return jsonResponse({ error: formatError }, 400, {}, [], origin)
@@ -549,8 +662,9 @@ const handleSignup = async (req: Request) => {
     },
   )
 
-  const token = Math.floor(100000 + Math.random() * 900000).toString()
+  const token = generateOtp()
   const expiresAt = new Date(Date.now() + 20 * 60 * 1000).toISOString()
+  const passwordSealed = await sealSecret(password)
 
   const insertRes = await fetch(`${SUPABASE_URL}/rest/v1/email_verifications`, {
     method: 'POST',
@@ -558,14 +672,20 @@ const handleSignup = async (req: Request) => {
       ...authHeaders(true),
       Prefer: 'return=representation',
     },
-    body: JSON.stringify([{ email, token, purpose: 'signup', payload: { username, password }, expires_at: expiresAt }]),
+    body: JSON.stringify([{
+      email,
+      token,
+      purpose: 'signup',
+      payload: { username, password_sealed: passwordSealed },
+      expires_at: expiresAt,
+    }]),
   })
 
   if (!insertRes.ok) return jsonResponse({ error: 'Failed to store verification' }, 500, {}, [], origin)
 
   const sendResult = await sendVerificationEmail(email, token)
   if (!sendResult.ok) {
-    await fetch(`${SUPABASE_URL}/rest/v1/email_verifications?token=eq.${encodeURIComponent(token)}`, {
+    await fetch(`${SUPABASE_URL}/rest/v1/email_verifications?token=eq.${encodeURIComponent(token)}&email=eq.${encodeURIComponent(email)}`, {
       method: 'DELETE',
       headers: { ...authHeaders(true) },
     })
@@ -577,8 +697,11 @@ const handleSignup = async (req: Request) => {
 
 const handleResend = async (req: Request) => {
   const origin = req.headers.get('origin')
-  const { email } = await parseJson(req)
-  if (!email) return jsonResponse({ error: 'Missing email' }, 400, {}, [], origin)
+  const { email: rawEmail } = await parseJson(req)
+  const email = normalizeEmail(rawEmail)
+  if (!validEmail(email)) return jsonResponse({ error: 'Missing email' }, 400, {}, [], origin)
+  const limited = await enforceRateLimit(`otp:email:${email}`, 8, 15 * 60 * 1000)
+  if (!limited.ok) return jsonResponse({ error: limited.error }, 429, {}, [], origin)
 
   const lookupRes = await fetch(
     `${SUPABASE_URL}/rest/v1/email_verifications?email=eq.${encodeURIComponent(email)}&purpose=eq.signup&used=eq.false&select=*&order=created_at.desc&limit=1`,
@@ -590,8 +713,11 @@ const handleResend = async (req: Request) => {
   const rows = await lookupRes.json()
   const row = Array.isArray(rows) && rows.length ? rows[0] : null
   if (!row) return jsonResponse({ error: 'No pending verification for this email' }, 404, {}, [], origin)
+  if ((row.attempts || 0) >= MAX_OTP_ATTEMPTS) {
+    return jsonResponse({ error: 'Too many attempts. Start signup again.' }, 429, {}, [], origin)
+  }
 
-  const token = Math.floor(100000 + Math.random() * 900000).toString()
+  const token = generateOtp()
   const expiresAt = new Date(Date.now() + 20 * 60 * 1000).toISOString()
 
   const updateRes = await fetch(`${SUPABASE_URL}/rest/v1/email_verifications?id=eq.${row.id}`, {
@@ -613,27 +739,42 @@ const handleResend = async (req: Request) => {
 
 const handleVerify = async (req: Request) => {
   const origin = req.headers.get('origin')
-  const { token } = await parseJson(req)
-  if (!token) return jsonResponse({ error: 'Missing token' }, 400, {}, [], origin)
+  const body = await parseJson(req)
+  const email = normalizeEmail(body.email)
+  const token = typeof body.token === 'string' ? body.token.trim() : ''
+  if (!validEmail(email) || !/^\d{6}$/.test(token)) {
+    return jsonResponse({ error: 'Enter a valid email and 6-digit code' }, 400, {}, [], origin)
+  }
+  const limited = await enforceRateLimit(`verify:email:${email}`, 20, 15 * 60 * 1000)
+  if (!limited.ok) return jsonResponse({ error: limited.error }, 429, {}, [], origin)
 
-  const lookupRes = await fetch(`${SUPABASE_URL}/rest/v1/email_verifications?token=eq.${encodeURIComponent(token)}&purpose=eq.signup&used=eq.false&select=*&limit=1`, {
-    headers: {
-      ...authHeaders(true),
-    },
-  })
+  const lookupRes = await fetch(
+    `${SUPABASE_URL}/rest/v1/email_verifications?email=eq.${encodeURIComponent(email)}&token=eq.${encodeURIComponent(token)}&purpose=eq.signup&used=eq.false&select=*&limit=1`,
+    { headers: { ...authHeaders(true) } },
+  )
 
   if (!lookupRes.ok) return jsonResponse({ error: 'Lookup failed' }, 500, {}, [], origin)
 
   const rows = await lookupRes.json()
   const row = Array.isArray(rows) && rows.length ? rows[0] : null
-  if (!row) return jsonResponse({ error: 'Invalid or expired token' }, 400, {}, [], origin)
+  if (!row) {
+    const pendingRes = await fetch(
+      `${SUPABASE_URL}/rest/v1/email_verifications?email=eq.${encodeURIComponent(email)}&purpose=eq.signup&used=eq.false&select=id,attempts&order=created_at.desc&limit=1`,
+      { headers: { ...authHeaders(true) } },
+    )
+    const pending = pendingRes.ok ? await pendingRes.json().catch(() => []) : []
+    if (Array.isArray(pending) && pending[0]?.id) await bumpOtpAttempts(pending[0].id, pending[0].attempts || 0)
+    return jsonResponse({ error: 'Invalid or expired token' }, 400, {}, [], origin)
+  }
+  if ((row.attempts || 0) >= MAX_OTP_ATTEMPTS) {
+    return jsonResponse({ error: 'Too many attempts. Start signup again.' }, 429, {}, [], origin)
+  }
   if (new Date(row.expires_at) < new Date()) return jsonResponse({ error: 'Expired token' }, 400, {}, [], origin)
 
-  const email = row.email
   const username = row.payload?.username
-  const password = row.payload?.password
+  const password = await resolveStoredPassword(row.payload)
 
-  if (!email || !username || !password) return jsonResponse({ error: 'Verification payload invalid' }, 500, {}, [], origin)
+  if (!username || !password) return jsonResponse({ error: 'Verification payload invalid' }, 500, {}, [], origin)
 
   // Final backend check before account creation: the username may have been
   // claimed while this signup was waiting for OTP verification.
@@ -702,7 +843,7 @@ const handleVerify = async (req: Request) => {
       ...authHeaders(true),
       Prefer: 'return=representation',
     },
-    body: JSON.stringify({ used: true }),
+    body: JSON.stringify({ used: true, payload: { username } }),
   })
 
   const signInData = await signIn(email, password)
@@ -715,19 +856,12 @@ const handleVerify = async (req: Request) => {
     buildCookie('sb-refresh-token', signInData.refresh_token, 60 * 60 * 24 * 30),
   ]
 
-  return jsonResponse({ status: 'user_created', user: { id: userId, email } }, 200, {}, cookies, origin)
+  return jsonResponse({ status: 'user_created', user: await userWithRole(signInData.user) }, 200, {}, cookies, origin)
 }
-
-const normalizeEmail = (value: unknown) =>
-  typeof value === 'string' ? value.trim().toLowerCase() : ''
-
-const validEmail = (email: string) => /^\S+@\S+\.\S+$/.test(email)
-const validPassword = (password: string) => password.length >= 8 && password.length <= 128
-const validPublicSlug = (slug: string) => /^.{1,60}\d{5}$/.test(slug)
 
 const issueOtp = async (
   email: string,
-  purpose: 'user_signup' | 'user_reset',
+  purpose: 'user_signup' | 'user_reset' | 'creator_reset',
   payload: Record<string, unknown>,
 ) => {
   await fetch(
@@ -738,12 +872,17 @@ const issueOtp = async (
       body: JSON.stringify({ used: true }),
     },
   )
-  const token = Math.floor(100000 + Math.random() * 900000).toString()
+  const safePayload = { ...payload }
+  if (typeof safePayload.password === 'string') {
+    safePayload.password_sealed = await sealSecret(String(safePayload.password))
+    delete safePayload.password
+  }
+  const token = generateOtp()
   const expiresAt = new Date(Date.now() + 20 * 60 * 1000).toISOString()
   const insert = await fetch(`${SUPABASE_URL}/rest/v1/email_verifications`, {
     method: 'POST',
     headers: { ...authHeaders(true), Prefer: 'return=minimal' },
-    body: JSON.stringify([{ email, token, purpose, payload, expires_at: expiresAt }]),
+    body: JSON.stringify([{ email, token, purpose, payload: safePayload, expires_at: expiresAt }]),
   })
   if (!insert.ok) return { ok: false, error: 'Failed to store verification' }
   const sent = await sendVerificationEmail(email, token)
@@ -770,6 +909,8 @@ const handleUserSignup = async (req: Request) => {
   if (!validEmail(email)) return jsonResponse({ error: 'Enter a valid email address' }, 400, {}, [], origin)
   if (name.length < 2 || name.length > 80) return jsonResponse({ error: 'Name must be 2-80 characters' }, 400, {}, [], origin)
   if (!validPassword(password)) return jsonResponse({ error: 'Password must be 8-128 characters' }, 400, {}, [], origin)
+  const limited = await enforceRateLimit(`otp:email:${email}`, 8, 15 * 60 * 1000)
+  if (!limited.ok) return jsonResponse({ error: limited.error }, 429, {}, [], origin)
 
   const existing = await fetch(
     `${SUPABASE_URL}/rest/v1/user_accounts?email=ilike.${encodeURIComponent(email)}&select=id,role&limit=1`,
@@ -805,7 +946,7 @@ const handleUserVerify = async (req: Request) => {
   }
 
   const name = typeof row.payload?.name === 'string' ? row.payload.name.trim() : ''
-  const password = typeof row.payload?.password === 'string' ? row.payload.password : ''
+  const password = await resolveStoredPassword(row.payload)
   if (!name || !validPassword(password)) return jsonResponse({ error: 'Verification payload invalid' }, 500, {}, [], origin)
 
   const createdRes = await fetch(`${SUPABASE_URL}/auth/v1/admin/users`, {
@@ -883,6 +1024,8 @@ const handleUserForgot = async (req: Request) => {
     ? body.redirect_slug.toLowerCase()
     : ''
   if (!validEmail(email)) return jsonResponse({ error: 'Enter a valid email address' }, 400, {}, [], origin)
+  const limited = await enforceRateLimit(`otp:email:${email}`, 8, 15 * 60 * 1000)
+  if (!limited.ok) return jsonResponse({ error: limited.error }, 429, {}, [], origin)
 
   const accountRes = await fetch(
     `${SUPABASE_URL}/rest/v1/user_accounts?email=ilike.${encodeURIComponent(email)}&role=eq.user&select=id&limit=1`,
@@ -1384,7 +1527,7 @@ const handleGetProfile = async (req: Request) => {
 
   const [res, postsCountRes, followersCountRes, followingCountRes, postsRes] = await Promise.all([
     fetch(
-      `${SUPABASE_URL}/rest/v1/profiles?id=eq.${user.id}&select=id,username,full_name,bio,avatar_url,location,instagram_url,facebook_url,gender,is_private,public_serial&limit=1`,
+      `${SUPABASE_URL}/rest/v1/profiles?id=eq.${user.id}&select=id,username,full_name,bio,avatar_url,location,instagram_url,facebook_url,gender,public_serial&limit=1`,
       { headers: { ...authHeaders(true) } },
     ),
     fetch(`${SUPABASE_URL}/rest/v1/posts?creator_id=eq.${user.id}&select=id`, {
@@ -1429,14 +1572,8 @@ const handleGetProfile = async (req: Request) => {
 
 const handleProfile = async (req: Request) => {
   const origin = req.headers.get('origin')
-  const cookies = serializeCookies(req.headers.get('cookie') || '')
-  const accessToken = cookies['sb-access-token'] ? decodeURIComponent(cookies['sb-access-token']) : ''
-  if (!accessToken) return jsonResponse({ error: 'Unauthorized' }, 401, {}, [], origin)
-
-  const user = await fetchUser(accessToken)
+  const user = await requireRole(req, 'creator')
   if (!user?.id) return jsonResponse({ error: 'Unauthorized' }, 401, {}, [], origin)
-  const account = await getAccount(user.id)
-  if (account?.role !== 'creator') return jsonResponse({ error: 'Creator account required' }, 403, {}, [], origin)
 
   const body = await parseJson(req)
 
@@ -1446,8 +1583,6 @@ const handleProfile = async (req: Request) => {
   const instagramUrl = typeof body.instagram_url === 'string' ? body.instagram_url.trim() : ''
   const facebookUrl = typeof body.facebook_url === 'string' ? body.facebook_url.trim() : ''
   const gender = typeof body.gender === 'string' ? body.gender : 'Prefer not to say'
-  // Optional: only touch is_private when the client explicitly sends a boolean
-  const isPrivate = typeof body.is_private === 'boolean' ? body.is_private : undefined
   if (!fullName) return jsonResponse({ error: 'Display name is required' }, 400, {}, [], origin)
   if (!bio) return jsonResponse({ error: 'Bio is required' }, 400, {}, [], origin)
   if (fullName.length > 100) return jsonResponse({ error: 'Display name must be 100 characters or fewer' }, 400, {}, [], origin)
@@ -1486,7 +1621,6 @@ const handleProfile = async (req: Request) => {
     gender,
     updated_at: new Date().toISOString(),
   }
-  if (typeof isPrivate === 'boolean') patch.is_private = isPrivate
 
   if (typeof body.avatar_base64 === 'string' && body.avatar_base64) {
     const contentType = typeof body.avatar_content_type === 'string' ? body.avatar_content_type : 'image/jpeg'
@@ -1527,7 +1661,8 @@ const handleGetPayoutAccount = async (req: Request) => {
   )
   if (!res.ok) return jsonResponse({ error: 'Failed to load payout account' }, 500, {}, [], origin)
   const rows = await res.json().catch(() => [])
-  return jsonResponse({ account: Array.isArray(rows) && rows.length ? rows[0] : null }, 200, {}, [], origin)
+  const row = Array.isArray(rows) && rows.length ? rows[0] : null
+  return jsonResponse({ account: publicPayoutAccount(row) }, 200, {}, [], origin)
 }
 
 const handleSavePayoutAccount = async (req: Request) => {
@@ -1575,7 +1710,155 @@ const handleSavePayoutAccount = async (req: Request) => {
     return jsonResponse({ error: 'Failed to save bank details' }, 500, {}, [], origin)
   }
   const rows = await res.json().catch(() => [])
-  return jsonResponse({ account: Array.isArray(rows) ? rows[0] : rows }, 200, {}, [], origin)
+  const row = Array.isArray(rows) ? rows[0] : rows
+  return jsonResponse({ account: publicPayoutAccount(row) }, 200, {}, [], origin)
+}
+
+const handleGetWallet = async (req: Request) => {
+  const origin = req.headers.get('origin')
+  const user = await requireRole(req, 'creator')
+  if (!user?.id) return jsonResponse({ error: 'Unauthorized' }, 401, {}, [], origin)
+
+  const salesRes = await fetch(
+    `${SUPABASE_URL}/rest/v1/post_purchases?creator_id=eq.${user.id}&status=eq.paid&select=id,amount,amount_paise,paid_at,post_id,user_id&order=paid_at.desc&limit=100`,
+    { headers: { ...authHeaders(true) } },
+  )
+  if (!salesRes.ok) return jsonResponse({ error: 'Failed to load sales' }, 500, {}, [], origin)
+  const salesRaw = await salesRes.json().catch(() => [])
+  const salesRows = Array.isArray(salesRaw) ? salesRaw : []
+
+  const wdRes = await fetch(
+    `${SUPABASE_URL}/rest/v1/wallet_withdrawals?creator_id=eq.${user.id}&select=id,amount_paise,status,account_holder,account_number_last4,ifsc,upi_id,created_at,processed_at&order=created_at.desc&limit=50`,
+    { headers: { ...authHeaders(true) } },
+  )
+  const withdrawals = wdRes.ok ? await wdRes.json().catch(() => []) : []
+
+  let lifetimePaise = 0
+  for (const sale of salesRows) {
+    lifetimePaise += Number(sale.amount_paise || Math.round(Number(sale.amount || 0) * 100))
+  }
+  let reservedPaise = 0
+  for (const w of Array.isArray(withdrawals) ? withdrawals : []) {
+    if (w.status === 'pending' || w.status === 'paid') reservedPaise += Number(w.amount_paise || 0)
+  }
+  const availablePaise = Math.max(0, lifetimePaise - reservedPaise)
+
+  const postIds = [...new Set(salesRows.map((s: { post_id: string }) => s.post_id).filter(Boolean))]
+  let postMap: Record<string, { public_id: string; caption: string }> = {}
+  if (postIds.length) {
+    const postsRes = await fetch(
+      `${SUPABASE_URL}/rest/v1/posts?id=in.(${postIds.join(',')})&select=id,public_id,caption`,
+      { headers: { ...authHeaders(true) } },
+    )
+    const posts = postsRes.ok ? await postsRes.json().catch(() => []) : []
+    for (const p of Array.isArray(posts) ? posts : []) {
+      postMap[p.id] = { public_id: p.public_id, caption: p.caption || '' }
+    }
+  }
+
+  const sales = salesRows.map((s: Record<string, unknown>) => {
+    const paise = Number(s.amount_paise || Math.round(Number(s.amount || 0) * 100))
+    const post = postMap[String(s.post_id)] || { public_id: '', caption: '' }
+    return {
+      id: s.id,
+      amount: paise / 100,
+      amount_paise: paise,
+      paid_at: s.paid_at,
+      post_public_id: post.public_id,
+      caption: post.caption,
+    }
+  })
+
+  const payoutRes = await fetch(
+    `${SUPABASE_URL}/rest/v1/payout_accounts?user_id=eq.${user.id}&select=account_holder,account_number,ifsc,upi_id,updated_at&limit=1`,
+    { headers: { ...authHeaders(true) } },
+  )
+  const payoutRows = payoutRes.ok ? await payoutRes.json().catch(() => []) : []
+  const payout = Array.isArray(payoutRows) && payoutRows.length ? payoutRows[0] : null
+
+  return jsonResponse({
+    available_balance: availablePaise / 100,
+    available_paise: availablePaise,
+    lifetime_earnings: lifetimePaise / 100,
+    lifetime_paise: lifetimePaise,
+    sales_count: sales.length,
+    min_withdraw: 100,
+    sales,
+    withdrawals: Array.isArray(withdrawals) ? withdrawals.map((w: Record<string, unknown>) => ({
+      ...w,
+      amount: Number(w.amount_paise || 0) / 100,
+    })) : [],
+    account: publicPayoutAccount(payout),
+  }, 200, {}, [], origin)
+}
+
+const handleWalletWithdraw = async (req: Request) => {
+  const origin = req.headers.get('origin')
+  const user = await requireRole(req, 'creator')
+  if (!user?.id) return jsonResponse({ error: 'Unauthorized' }, 401, {}, [], origin)
+
+  const body = await parseJson(req)
+  const amount = Number(body.amount)
+  if (!Number.isFinite(amount) || amount < 100) {
+    return jsonResponse({ error: 'Minimum withdrawal is ₹100' }, 400, {}, [], origin)
+  }
+  const amountPaise = Math.round(amount * 100)
+
+  const payoutRes = await fetch(
+    `${SUPABASE_URL}/rest/v1/payout_accounts?user_id=eq.${user.id}&select=*&limit=1`,
+    { headers: { ...authHeaders(true) } },
+  )
+  const payoutRows = payoutRes.ok ? await payoutRes.json().catch(() => []) : []
+  const payout = Array.isArray(payoutRows) && payoutRows.length ? payoutRows[0] : null
+  if (!payout?.account_number) {
+    return jsonResponse({ error: 'Add bank details before withdrawing' }, 400, {}, [], origin)
+  }
+
+  // Recalculate available balance server-side (never trust client).
+  const salesRes = await fetch(
+    `${SUPABASE_URL}/rest/v1/post_purchases?creator_id=eq.${user.id}&status=eq.paid&select=amount,amount_paise`,
+    { headers: { ...authHeaders(true) } },
+  )
+  const salesRows = salesRes.ok ? await salesRes.json().catch(() => []) : []
+  let lifetimePaise = 0
+  for (const sale of Array.isArray(salesRows) ? salesRows : []) {
+    lifetimePaise += Number(sale.amount_paise || Math.round(Number(sale.amount || 0) * 100))
+  }
+  const wdRes = await fetch(
+    `${SUPABASE_URL}/rest/v1/wallet_withdrawals?creator_id=eq.${user.id}&status=in.(pending,paid)&select=amount_paise`,
+    { headers: { ...authHeaders(true) } },
+  )
+  const wds = wdRes.ok ? await wdRes.json().catch(() => []) : []
+  let reservedPaise = 0
+  for (const w of Array.isArray(wds) ? wds : []) reservedPaise += Number(w.amount_paise || 0)
+  const availablePaise = Math.max(0, lifetimePaise - reservedPaise)
+  if (amountPaise > availablePaise) {
+    return jsonResponse({ error: 'Insufficient available balance' }, 400, {}, [], origin)
+  }
+
+  const insert = await fetch(`${SUPABASE_URL}/rest/v1/wallet_withdrawals`, {
+    method: 'POST',
+    headers: { ...authHeaders(true), Prefer: 'return=representation' },
+    body: JSON.stringify([{
+      creator_id: user.id,
+      amount_paise: amountPaise,
+      status: 'pending',
+      account_holder: payout.account_holder,
+      account_number_last4: String(payout.account_number).slice(-4),
+      ifsc: payout.ifsc,
+      upi_id: payout.upi_id || '',
+    }]),
+  })
+  if (!insert.ok) {
+    console.error('Withdraw failed:', await insert.text().catch(() => ''))
+    return jsonResponse({ error: 'Failed to submit withdrawal' }, 500, {}, [], origin)
+  }
+  const rows = await insert.json().catch(() => [])
+  const row = Array.isArray(rows) ? rows[0] : rows
+  return jsonResponse({
+    status: 'withdrawal_requested',
+    withdrawal: row ? { ...row, amount: amountPaise / 100 } : null,
+  }, 200, {}, [], origin)
 }
 
 const handleGetSupportTickets = async (req: Request) => {
@@ -2960,49 +3243,62 @@ const handleReportUser = async (req: Request) => {
 
 const handleForgot = async (req: Request) => {
   const origin = req.headers.get('origin')
-  const { email } = await parseJson(req)
-  if (!email) return jsonResponse({ error: 'Missing email' }, 400, {}, [], origin)
+  const body = await parseJson(req)
+  const email = normalizeEmail(body.email)
+  if (!validEmail(email)) return jsonResponse({ error: 'Enter a valid email address' }, 400, {}, [], origin)
+  const limited = await enforceRateLimit(`otp:email:${email}`, 8, 15 * 60 * 1000)
+  if (!limited.ok) return jsonResponse({ error: limited.error }, 429, {}, [], origin)
 
-  const res = await fetch(`${SUPABASE_URL}/auth/v1/recover`, {
-    method: 'POST',
-    headers: authHeaders(),
-    body: JSON.stringify({ email }),
-  })
-
-  const body = await res.json().catch(() => ({}))
-  if (!res.ok) return jsonResponse({ error: authErrorMessage(body, 'Reset failed') }, 400, {}, [], origin)
-  return jsonResponse({ status: 'reset_sent' }, 200, {}, [], origin)
+  const accountRes = await fetch(
+    `${SUPABASE_URL}/rest/v1/user_accounts?email=ilike.${encodeURIComponent(email)}&role=eq.creator&select=id&limit=1`,
+    { headers: { ...authHeaders(true) } },
+  )
+  const accounts = accountRes.ok ? await accountRes.json().catch(() => []) : []
+  if (!Array.isArray(accounts) || !accounts.length) {
+    return jsonResponse({ error: "You don't have a creator account" }, 404, {}, [], origin)
+  }
+  const issued = await issueOtp(email, 'creator_reset', { user_id: accounts[0].id })
+  if (!issued.ok) return jsonResponse({ error: issued.error || 'Failed to send reset code' }, 502, {}, [], origin)
+  return jsonResponse({ status: 'verification_sent' }, 200, {}, [], origin)
 }
 
 const handleReset = async (req: Request) => {
   const origin = req.headers.get('origin')
-  const { token, password } = await parseJson(req)
-  if (!token || !password) return jsonResponse({ error: 'Missing token or password' }, 400, {}, [], origin)
+  const body = await parseJson(req)
+  const email = normalizeEmail(body.email)
+  const token = typeof body.token === 'string' ? body.token.trim() : ''
+  const password = typeof body.password === 'string' ? body.password : ''
+  if (!validEmail(email) || !/^\d{6}$/.test(token) || !validPassword(password)) {
+    return jsonResponse({ error: 'Valid email, 6-digit code, and 8+ character password are required' }, 400, {}, [], origin)
+  }
 
-  const verifyRes = await fetch(`${SUPABASE_URL}/auth/v1/verify`, {
-    method: 'POST',
-    headers: authHeaders(),
-    body: JSON.stringify({ token, type: 'recovery' }),
-  })
+  const lookup = await fetch(
+    `${SUPABASE_URL}/rest/v1/email_verifications?email=eq.${encodeURIComponent(email)}&token=eq.${token}&purpose=eq.creator_reset&used=eq.false&select=*&order=created_at.desc&limit=1`,
+    { headers: { ...authHeaders(true) } },
+  )
+  const rows = lookup.ok ? await lookup.json().catch(() => []) : []
+  const row = Array.isArray(rows) && rows.length ? rows[0] : null
+  if (!row || new Date(row.expires_at) < new Date()) {
+    return jsonResponse({ error: 'Invalid or expired verification code' }, 400, {}, [], origin)
+  }
+  if ((row.attempts || 0) >= MAX_OTP_ATTEMPTS) {
+    return jsonResponse({ error: 'Too many attempts. Request a new reset code.' }, 429, {}, [], origin)
+  }
+  const userId = row.payload?.user_id
+  const account = userId ? await getAccount(userId) : null
+  if (!userId || account?.role !== 'creator') return jsonResponse({ error: 'Creator account not found' }, 404, {}, [], origin)
 
-  const verifyBody = await verifyRes.json().catch(() => ({}))
-  if (!verifyRes.ok) return jsonResponse({ error: authErrorMessage(verifyBody, 'Token verify failed') }, 400, {}, [], origin)
-
-  const accessToken = verifyBody.access_token || verifyBody.session?.access_token
-  if (!accessToken) return jsonResponse({ error: 'No access token returned' }, 500, {}, [], origin)
-
-  const updateRes = await fetch(`${SUPABASE_URL}/auth/v1/user`, {
+  const update = await fetch(`${SUPABASE_URL}/auth/v1/admin/users/${userId}`, {
     method: 'PUT',
-    headers: {
-      'Content-Type': 'application/json',
-      Authorization: `Bearer ${accessToken}`,
-      apikey: ANON_KEY,
-    },
+    headers: { ...authHeaders(true) },
     body: JSON.stringify({ password }),
   })
-
-  const updateBody = await updateRes.json().catch(() => ({}))
-  if (!updateRes.ok) return jsonResponse({ error: authErrorMessage(updateBody, 'Password update failed') }, 400, {}, [], origin)
+  if (!update.ok) return jsonResponse({ error: 'Failed to update password' }, 500, {}, [], origin)
+  await fetch(`${SUPABASE_URL}/rest/v1/email_verifications?id=eq.${row.id}`, {
+    method: 'PATCH',
+    headers: { ...authHeaders(true), Prefer: 'return=minimal' },
+    body: JSON.stringify({ used: true }),
+  })
   return jsonResponse({ status: 'password_updated' }, 200, {}, [], origin)
 }
 
@@ -3041,6 +3337,8 @@ const routeRequest = async (req: Request) => {
   if (isRoute('posts') && req.method === 'POST') return handleCreatePost(req)
   if (isRoute('payout-account') && req.method === 'GET') return handleGetPayoutAccount(req)
   if (isRoute('payout-account') && req.method === 'POST') return handleSavePayoutAccount(req)
+  if (isRoute('wallet') && req.method === 'GET') return handleGetWallet(req)
+  if (isRoute('wallet-withdraw') && req.method === 'POST') return handleWalletWithdraw(req)
   if (isRoute('support-tickets') && req.method === 'GET') return handleGetSupportTickets(req)
   if (isRoute('support-tickets') && req.method === 'POST') return handleCreateSupportTicket(req)
   if (isRoute('post') && req.method === 'GET') return handleGetPost(req, url)

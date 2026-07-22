@@ -1,20 +1,27 @@
-<div align="center">
-<img width="1200" height="475" alt="GHBanner" src="https://ai.google.dev/static/site-assets/images/share-ais-513315318.png" />
-</div>
+# MalluCupid
 
-# Run and deploy your AI Studio app
+Creator platform for free/paid posts, messaging, and Razorpay unlocks.
 
-This contains everything you need to run your app locally.
+**Live:** https://www.mallucupid.com  
+**Stack:** React (Vite) + Supabase (Postgres, Edge Functions, Storage) + Razorpay + Resend
 
-View your app in AI Studio: https://ai.studio/apps/bcade537-ab1d-4539-bd66-10fa6b9f5b0c
+## Local development
 
-## Run Locally
+1. `npm install`
+2. Set Amplify-style env vars (no `.env` committed — secrets stay in Supabase / Amplify):
+   - `VITE_SUPABASE_URL`
+   - `VITE_SUPABASE_ANON_KEY`
+   - `VITE_AUTH_API_URL` → `https://<project>.supabase.co/functions/v1/auth` (no trailing slash)
+3. `npm run dev` → http://localhost:3000
 
-**Prerequisites:**  Node.js
+## Backend
 
+- Linked project: `rytulzgsuzgicmpvrrxn`
+- Migrations: `npx supabase db push`
+- Deploy API: `npx supabase functions deploy auth --no-verify-jwt`
+- Docs: [DOCUMENTATION.md](./DOCUMENTATION.md)
 
-1. Install dependencies:
-   `npm install`
-2. Set the `GEMINI_API_KEY` in [.env.local](.env.local) to your Gemini API key
-3. Run the app:
-   `npm run dev`
+## Roles
+
+- **Creators** — `/login`, dashboard under `/:username`
+- **Fans** — `/userlogin`, public pages `/:username#####`, inbox `/user-inbox`

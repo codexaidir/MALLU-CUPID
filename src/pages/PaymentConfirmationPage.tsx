@@ -58,6 +58,11 @@ export default function PaymentConfirmationPage() {
   };
 
   useEffect(() => {
+    if (!postId) {
+      setState("processing");
+      setMessage("Missing payment details. Return to the post and try again.");
+      return;
+    }
     confirm();
   }, [postId, orderId]);
 

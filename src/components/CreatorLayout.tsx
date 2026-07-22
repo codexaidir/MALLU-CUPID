@@ -48,7 +48,7 @@ export default function CreatorLayout() {
     return <Navigate to="/login" replace />;
   }
   if (user.user_metadata?.role !== "creator") {
-    return <Navigate to="/userlogin" replace />;
+    return <Navigate to="/user-inbox" replace />;
   }
 
   if (canonical && username !== canonical) {

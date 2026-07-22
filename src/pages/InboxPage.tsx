@@ -27,6 +27,8 @@ export default function InboxPage() {
   const navigate = useNavigate();
   const chatPath = (conversationId: string) =>
     username ? `/${username}/chat/${conversationId}` : `/user-chat/${conversationId}`;
+  const loginPath = username ? "/login" : "/userlogin";
+  const inboxRedirect = username ? `${username}/inbox` : "user-inbox";
 
   const [conversations, setConversations] = useState<ConversationItem[]>([]);
   const [isLoading, setIsLoading] = useState(true);
@@ -39,10 +41,13 @@ export default function InboxPage() {
     let cancelled = false;
     const load = async () => {
       const response = await getConversations();
-      if (!cancelled) {
-        setConversations(response.conversations || []);
-        setIsLoading(false);
+      if (cancelled) return;
+      if (response.error && /unauthorized|login/i.test(response.error)) {
+        navigate(`${loginPath}?redirect=${encodeURIComponent(inboxRedirect)}`, { replace: true });
+        return;
       }
+      setConversations(response.conversations || []);
+      setIsLoading(false);
     };
     load();
     const interval = setInterval(load, 10000);
@@ -50,7 +55,7 @@ export default function InboxPage() {
       cancelled = true;
       clearInterval(interval);
     };
-  }, []);
+  }, [navigate, loginPath, inboxRedirect]);
 
   // Username lookup when the search text matches no existing chats
   useEffect(() => {

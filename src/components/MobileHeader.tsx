@@ -1,7 +1,6 @@
 import React, { useState } from 'react';
 import { LayoutDashboard, LogOut, MessageCircle, Loader2 } from 'lucide-react';
 import { useNavigate, useParams } from 'react-router-dom';
-import { logout } from '../lib/auth';
 import { useAuth } from '../lib/useAuth';
 
 export function MobileHeader() {
@@ -14,7 +13,6 @@ export function MobileHeader() {
   const handleSignOut = async () => {
     if (signingOut) return;
     setSigningOut(true);
-    await logout();
     await signOut();
     navigate('/login', { replace: true });
   };

@@ -61,7 +61,7 @@ export default function ForgotPasswordPage() {
     
     (async () => {
       setIsLoading(true);
-      const response = await resetPassword(otp, password);
+      const response = await resetPassword(email, otp, password);
       setIsLoading(false);
       if (response?.error) {
         setError(response.error || 'Failed to reset password');
@@ -166,10 +166,9 @@ export default function ForgotPasswordPage() {
               onChange={(e) => setOtp(e.target.value.replace(/\D/g, ''))}
               disabled={isLoading || !!success}
               className="w-full h-12 px-4 rounded-xl border border-zinc-200 bg-zinc-50 focus:bg-white focus:outline-none focus:ring-2 focus:ring-rose-500/20 focus:border-rose-500 transition-all text-center tracking-widest font-mono text-lg disabled:opacity-50 disabled:cursor-not-allowed"
-              placeholder="123456"
+              placeholder="••••••"
               maxLength={6}
             />
-            <p className="text-center text-xs text-zinc-500">Hint: Use 123456</p>
           </div>
 
           <div className="space-y-2">

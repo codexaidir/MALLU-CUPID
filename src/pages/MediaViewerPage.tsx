@@ -50,8 +50,10 @@ export default function MediaViewerPage() {
   const [duration, setDuration] = useState(0);
 
   const loginRedirect = useCallback(() => {
-    navigate(`/userlogin?redirect=${encodeURIComponent(`view/${postId}`)}`, { replace: true });
-  }, [navigate, postId]);
+    const loginPath = username ? "/login" : "/userlogin";
+    const redirect = username ? `${username}/post/${postId}` : `view/${postId}`;
+    navigate(`${loginPath}?redirect=${encodeURIComponent(redirect)}`, { replace: true });
+  }, [navigate, postId, username]);
 
   const loadPost = useCallback(async () => {
     if (!postId) return;
@@ -258,8 +260,9 @@ export default function MediaViewerPage() {
                       <button
                         onClick={() => {
                           setIsMenuOpen(false);
-                          const owner = post.owner?.username;
-                          if (owner) navigate(`/${owner}/post/${post.public_id}/report`);
+                          // Consumers use /report/:id (outside CreatorLayout); creators keep nested path.
+                          if (username) navigate(`/${username}/post/${post.public_id}/report`);
+                          else navigate(`/report/${post.public_id}`);
                         }}
                         className="w-full flex items-center gap-3 px-4 py-3.5 text-rose-600 hover:bg-rose-50 transition-colors text-left"
                       >

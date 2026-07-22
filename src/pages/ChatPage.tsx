@@ -2,7 +2,7 @@ import React, { useCallback, useEffect, useRef, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { motion, AnimatePresence } from "motion/react";
 import {
-  ArrowLeft, MoreVertical, Phone, Video, Send, Plus, Smile, Loader2, X,
+  ArrowLeft, MoreVertical, Send, Plus, Smile, Loader2, X,
   Trash2, Ban, Flag, AlertCircle, Eye, CheckCheck, Check, ImagePlus,
 } from "lucide-react";
 import {
@@ -89,7 +89,9 @@ export default function ChatPage() {
       setMessages(response.messages || []);
       setLoadError("");
     } else if (response.error && /unauthorized|login/i.test(response.error)) {
-      navigate(`/userlogin?redirect=${encodeURIComponent(username ? `${username}/chat/${conversationId}` : `user-chat/${conversationId}`)}`, { replace: true });
+      const loginPath = username ? "/login" : "/userlogin";
+      const redirect = username ? `${username}/chat/${conversationId}` : `user-chat/${conversationId}`;
+      navigate(`${loginPath}?redirect=${encodeURIComponent(redirect)}`, { replace: true });
       return;
     } else if (initial) {
       setLoadError(response.error || "Failed to load chat");
@@ -307,13 +309,6 @@ export default function ChatPage() {
                 <p className="text-[11px] text-zinc-400 truncate leading-tight">@{other?.username || ''}</p>
               </div>
             </div>
-            {/* Calls: UI only, wiring comes later */}
-            <button aria-label="Video call (coming soon)" title="Video calls coming soon" className="p-2 text-zinc-400 rounded-full cursor-default">
-              <Video className="w-5 h-5" />
-            </button>
-            <button aria-label="Audio call (coming soon)" title="Audio calls coming soon" className="p-2 text-zinc-400 rounded-full cursor-default">
-              <Phone className="w-5 h-5" />
-            </button>
             <div className="relative">
               <button onClick={() => setIsMenuOpen((o) => !o)} aria-label="Chat options" className="p-2 text-zinc-700 hover:bg-zinc-100 rounded-full">
                 <MoreVertical className="w-5 h-5" />

@@ -6,7 +6,7 @@ import {
   MessageCircle, MonitorX, Play, PlaySquare, Share, UserPlus, X, Eye,
 } from "lucide-react";
 import {
-  checkoutPost, getPost, getPublicProfile, startConversation, togglePublicFollow, logout,
+  checkoutPost, getPost, getPublicProfile, startConversation, togglePublicFollow,
   type PublicProfileData, type PublicProfilePost,
 } from "../lib/auth";
 import { useAuth } from "../lib/useAuth";
@@ -184,12 +184,11 @@ export default function PublicProfilePage() {
   const isLoggedIn = Boolean(user) || Boolean(data?.viewer?.authenticated);
   const isOwnPage =
     Boolean(user?.user_metadata?.username) &&
-    String(user.user_metadata.username).toLowerCase() === String(data?.profile.username || "").toLowerCase();
+    String(user?.user_metadata?.username).toLowerCase() === String(data?.profile.username || "").toLowerCase();
 
   const handleLogout = async () => {
     if (signingOut) return;
     setSigningOut(true);
-    await logout();
     await signOut();
     setSigningOut(false);
     navigate(`/userlogin?redirect=${encodeURIComponent(slug)}`, { replace: true });
@@ -321,8 +320,8 @@ export default function PublicProfilePage() {
       description: `Unlock @${data?.profile.username || "creator"} post`,
       order_id: checkout.order_id,
       prefill: {
-        email: user.email || "",
-        name: user.user_metadata?.name || "",
+        email: user?.email || "",
+        name: user?.user_metadata?.name || user?.user_metadata?.full_name || "",
       },
       notes: { post_public_id: post.public_id },
       theme: { color: "#f43f5e" },

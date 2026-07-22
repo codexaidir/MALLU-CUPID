@@ -161,7 +161,7 @@ The application uses URL-based pagination (React Router) with the following rout
 
 - Usernames are permanent once created at signup. `POST /profile` never updates the username: if a request includes a username different from the current one it returns 400 "Username cannot be changed" (backend-enforced, works even if the frontend is bypassed). The username -> auth metadata sync on profile update was removed as unnecessary.
 - Edit Profile page: username field is read-only (grayed, lock icon, "Usernames are permanent and cannot be changed.") and is not sent on save — this also fixes the false "Username already taken" error that appeared when changing the avatar.
-- The "Private account" toggle was removed from Edit Profile. `is_private` is only written when a client explicitly sends a boolean, so existing values are preserved.
+- Private accounts removed: migration `016` drops `profiles.is_private`; API/types no longer accept it.
 
 ## Public creator pages (guest access, mobile only)
 
@@ -186,4 +186,22 @@ The application uses URL-based pagination (React Router) with the following rout
 - Migration `013` adds purchase audit fields: `creator_id`, `amount_paise`, `provider`, and `verified_at`, while the existing unique `(post_id,user_id)` enforces one permanent purchase record per user/post.
 - Razorpay callback goes to `/payment-confirmation?post=&order=`. The page verifies the HMAC callback server-side, then polls `GET /post-payment-status`. The backend independently fetches Razorpay payment/order data and validates order ID, captured status, INR currency, and exact immutable amount before granting access.
 - If the browser callback is lost after debit, the confirmation page and subsequent checkout reconcile the existing order through Razorpay's server API. A captured payment is recorded and unlocked; an authorized/processing payment shows **Confirmation pending / Do not pay again** rather than a false failure. Purchase recording is atomic/idempotent, so concurrent confirmation calls cannot duplicate the purchase notification.
+
+## Wallet (creator earnings)
+
+- Migration `017`: `wallet_withdrawals` + `auth_rate_limits`; revoke PostgREST grants on posts/likes/views/follows/purchases/payout/tickets/reports; drop public SELECT policies that leaked `media_paths`.
+- `GET /wallet`: available balance = paid purchase totals − pending/paid withdrawals; sales list; masked bank details.
+- `POST /wallet-withdraw`: min ₹100; requires bank details; creates `pending` withdrawal (manual payout processing).
+- Payout APIs never return full account numbers (masked + last4 only).
+- OTP endpoints rate-limited per email/IP via `auth_rate_limits`.
+
+## Auth / security hardening (015–016)
+
+- Migration `015`: RLS on `profiles` + `email_verifications`; OTP lookup index.
+- Migration `016`: drop unused `profiles.is_private`.
+- OTP passwords AES-GCM sealed; crypto OTP; verify requires email+token; attempt cap.
+- Creator `/forgot`+`/reset` use 6-digit OTP (`creator_reset`).
+- `welcome` edge function returns 410. Verification: live payout API; KYC not enabled.
+- Consumer report: `/report/:postId`. Creator OTP verify refreshes session.
+
 

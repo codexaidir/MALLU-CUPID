@@ -2,11 +2,13 @@ import React, { useState, useEffect } from "react";
 import { motion, AnimatePresence } from "motion/react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { LogOut, LayoutDashboard, Users, CreditCard, Heart, Grid, PlaySquare, Play, Menu, X, Bell, ShieldCheck, BadgeCheck, Wallet, MoreVertical, Edit2, Trash2, Plus, Copy, Check, Inbox, Link2, ImagePlus, Radio, TrendingUp, Sparkles, UploadCloud, FileImage, FileVideo, Eye, LockKeyhole, Video, Layers, HelpCircle } from "lucide-react";
-import { getProfile, logout, publicProfileSlug, type CreatorPost, type Profile, type ProfileStats } from "../lib/auth";
+import { getProfile, publicProfileSlug, type CreatorPost, type Profile, type ProfileStats } from "../lib/auth";
+import { useAuth } from "../lib/useAuth";
 
 export default function DashboardPage() {
   const { username: routeUsername } = useParams<{ username: string }>();
   const base = `/${routeUsername}`;
+  const { signOut } = useAuth();
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
   const [isSignOutModalOpen, setIsSignOutModalOpen] = useState(false);
   const [isShareModalOpen, setIsShareModalOpen] = useState(false);
@@ -14,7 +16,6 @@ export default function DashboardPage() {
   const [stats, setStats] = useState<ProfileStats>({ posts: 0, followers: 0, following: 0 });
   const [copied, setCopied] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
-  const [isNotificationsOpen, setIsNotificationsOpen] = useState(false);
   const [isNewPostMenuOpen, setIsNewPostMenuOpen] = useState(false);
   const [activeTab, setActiveTab] = useState<'grid' | 'video'>('grid');
   const navigate = useNavigate();
@@ -34,9 +35,9 @@ export default function DashboardPage() {
   }, []);
 
   const handleSignOut = async () => {
-    await logout();
+    await signOut();
     setIsSignOutModalOpen(false);
-    navigate("/", { replace: true });
+    navigate("/login", { replace: true });
   };
 
   // The shareable link is the public creator page (/<username><serial>)
@@ -65,17 +66,13 @@ export default function DashboardPage() {
         <Link to={`${base}/inbox`} className={`p-3 text-zinc-500 hover:bg-zinc-50 hover:text-zinc-900 rounded-xl transition-colors group relative ${isExpanded ? 'flex items-center gap-3' : ''}`}>
           <div className="relative shrink-0">
             <Inbox className="w-6 h-6" />
-            <span className="absolute -top-1 -right-1 w-3 h-3 bg-rose-500 rounded-full border-2 border-white"></span>
           </div>
           {isExpanded ? <span className="font-semibold">Inbox</span> : <span className="absolute left-full ml-4 px-2 py-1 bg-zinc-800 text-white text-xs rounded opacity-0 group-hover:opacity-100 pointer-events-none whitespace-nowrap z-50">Inbox</span>}
         </Link>
-        <button 
-          onClick={() => setIsNotificationsOpen(true)}
-          className={`p-3 text-zinc-500 hover:bg-zinc-50 hover:text-zinc-900 rounded-xl transition-colors group relative ${isExpanded ? 'flex items-center gap-3 w-full text-left' : ''}`}
-        >
+        <Link to={`${base}/notifications`} className={`p-3 text-zinc-500 hover:bg-zinc-50 hover:text-zinc-900 rounded-xl transition-colors group relative ${isExpanded ? 'flex items-center gap-3' : ''}`}>
           <Bell className="w-6 h-6 shrink-0" />
           {isExpanded ? <span className="font-semibold">Notifications</span> : <span className="absolute left-full ml-4 px-2 py-1 bg-zinc-800 text-white text-xs rounded opacity-0 group-hover:opacity-100 pointer-events-none whitespace-nowrap z-50">Notifications</span>}
-        </button>
+        </Link>
         <Link to={`${base}/wallet`} className={`p-3 text-zinc-500 hover:bg-zinc-50 hover:text-zinc-900 rounded-xl transition-colors group relative ${isExpanded ? 'flex items-center gap-3' : ''}`}>
           <Wallet className="w-6 h-6 shrink-0" />
           {isExpanded ? <span className="font-semibold">Wallet</span> : <span className="absolute left-full ml-4 px-2 py-1 bg-zinc-800 text-white text-xs rounded opacity-0 group-hover:opacity-100 pointer-events-none whitespace-nowrap z-50">Wallet</span>}
@@ -457,41 +454,6 @@ export default function DashboardPage() {
                 >
                   Sign Out
                 </button>
-              </div>
-            </motion.div>
-          </div>
-        )}
-      </AnimatePresence>
-
-      {/* Notifications Drawer */}
-      <AnimatePresence>
-        {isNotificationsOpen && (
-          <div className="fixed inset-0 z-[70] flex justify-end">
-            <motion.div 
-              initial={{ opacity: 0 }}
-              animate={{ opacity: 1 }}
-              exit={{ opacity: 0 }}
-              onClick={() => setIsNotificationsOpen(false)}
-              className="absolute inset-0 bg-zinc-900/40 backdrop-blur-sm"
-            />
-            <motion.div 
-              initial={{ x: "100%" }}
-              animate={{ x: 0 }}
-              exit={{ x: "100%" }}
-              transition={{ type: "spring", damping: 25, stiffness: 200 }}
-              className="relative w-full max-w-sm h-full bg-white shadow-2xl flex flex-col"
-            >
-              <div className="h-16 flex items-center justify-between px-6 border-b border-zinc-200 shrink-0">
-                <h2 className="font-display font-bold text-lg text-zinc-900">Notifications</h2>
-                <button 
-                  onClick={() => setIsNotificationsOpen(false)} 
-                  className="p-2 -mr-2 text-zinc-500 hover:text-zinc-900 transition-colors rounded-full hover:bg-zinc-100"
-                >
-                  <X className="w-5 h-5" />
-                </button>
-              </div>
-              <div className="flex-1 p-8 flex items-center justify-center text-sm text-zinc-500">
-                No notifications yet.
               </div>
             </motion.div>
           </div>

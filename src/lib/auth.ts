@@ -74,8 +74,8 @@ export async function checkUsername(username: string): Promise<{
   return apiGet(`/username-check?u=${encodeURIComponent(username)}`);
 }
 
-export async function verifyOtp(token: string) {
-  return apiPost('/verify', { token });
+export async function verifyOtp(email: string, token: string) {
+  return apiPost('/verify', { email, token });
 }
 
 export async function resendOtp(email: string) {
@@ -86,8 +86,8 @@ export async function forgotPassword(email: string) {
   return apiPost('/forgot', { email });
 }
 
-export async function resetPassword(token: string, password: string) {
-  return apiPost('/reset', { token, password });
+export async function resetPassword(email: string, token: string, password: string) {
+  return apiPost('/reset', { email, token, password });
 }
 
 export async function getSession() {
@@ -104,7 +104,6 @@ export interface Profile {
   instagram_url: string;
   facebook_url: string;
   gender: 'Prefer not to say' | 'Male' | 'Female' | 'Transgender';
-  is_private: boolean;
   public_serial: number;
 }
 
@@ -136,10 +135,12 @@ export interface CreatorPost {
 
 export interface PayoutAccount {
   account_holder: string;
-  account_number: string;
+  account_number_last4: string;
+  account_number_masked: string;
   ifsc: string;
   upi_id: string;
-  updated_at: string;
+  updated_at: string | null;
+  has_account: boolean;
 }
 
 export async function getPayoutAccount(): Promise<{ account?: PayoutAccount | null; error?: string }> {
@@ -153,6 +154,46 @@ export async function savePayoutAccount(data: {
   upi_id: string;
 }): Promise<{ account?: PayoutAccount; error?: string }> {
   return apiPost('/payout-account', data);
+}
+
+export interface WalletSale {
+  id: string;
+  amount: number;
+  amount_paise: number;
+  paid_at: string;
+  post_public_id: string;
+  caption: string;
+}
+
+export interface WalletWithdrawal {
+  id: string;
+  amount: number;
+  amount_paise: number;
+  status: 'pending' | 'paid' | 'rejected';
+  account_holder: string;
+  account_number_last4: string;
+  ifsc: string;
+  created_at: string;
+  processed_at: string | null;
+}
+
+export interface WalletSummary {
+  available_balance: number;
+  lifetime_earnings: number;
+  sales_count: number;
+  min_withdraw: number;
+  sales?: WalletSale[];
+  withdrawals?: WalletWithdrawal[];
+  account?: PayoutAccount | null;
+  error?: string;
+}
+
+export async function getWallet(): Promise<WalletSummary> {
+  return apiGet('/wallet');
+}
+
+export async function requestWithdraw(amount: number): Promise<{ status?: string; withdrawal?: WalletWithdrawal; error?: string }> {
+  return apiPost('/wallet-withdraw', { amount });
 }
 
 export interface SupportTicket {
@@ -495,7 +536,6 @@ export async function updateProfile(data: {
   instagram_url?: string;
   facebook_url?: string;
   gender?: Profile['gender'];
-  is_private?: boolean;
   avatar_url?: string;
   avatar_base64?: string;
   avatar_content_type?: string;

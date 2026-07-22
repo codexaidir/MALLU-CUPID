@@ -3,6 +3,7 @@ import { motion, AnimatePresence } from "motion/react";
 import { ArrowRight, KeyRound, Loader2, AlertCircle, CheckCircle2 } from "lucide-react";
 import { useNavigate, useLocation } from "react-router-dom";
 import { verifyOtp, resendOtp } from "../lib/auth";
+import { useAuth } from "../lib/useAuth";
 
 export default function VerifyOtpPage() {
   const [otp, setOtp] = useState(["", "", "", "", "", ""]);
@@ -13,6 +14,7 @@ export default function VerifyOtpPage() {
   const [success, setSuccess] = useState<string | null>(null);
   const navigate = useNavigate();
   const location = useLocation();
+  const { refreshSession } = useAuth();
   const email: string | undefined = location.state?.email;
 
   useEffect(() => {
@@ -69,12 +71,14 @@ export default function VerifyOtpPage() {
     const otpCode = otp.join("");
     
     (async () => {
-      const response = await verifyOtp(otpCode);
+      if (!email) return;
+      const response = await verifyOtp(email, otpCode);
       setIsLoading(false);
       if (response?.error) {
         setError(response.error || 'Invalid verification code');
         return;
       }
+      await refreshSession();
       setSuccess('Verification successful! Redirecting...');
       setTimeout(() => {
         navigate('/onboarding', { replace: true });

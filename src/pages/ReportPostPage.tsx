@@ -7,9 +7,9 @@ import { getPost, reportPost, REPORT_REASONS, type PostDetail } from "../lib/aut
 const MAX_DETAILS = 750;
 
 export default function ReportPostPage() {
-  const { username, postId } = useParams<{ username: string; postId: string }>();
+  const { username, postId } = useParams<{ username?: string; postId: string }>();
   const navigate = useNavigate();
-  const viewerPath = `/${username}/post/${postId}`;
+  const viewerPath = username ? `/${username}/post/${postId}` : `/view/${postId}`;
 
   const [post, setPost] = useState<PostDetail | null>(null);
   const [isLoading, setIsLoading] = useState(true);

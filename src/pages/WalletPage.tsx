@@ -1,38 +1,64 @@
-import React, { useEffect, useState } from "react";
+import React, { useCallback, useEffect, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { motion } from "motion/react";
 import { ArrowLeft, Wallet, Landmark, IndianRupee, AlertCircle, CheckCircle2, Loader2, ShoppingBag, Pencil } from "lucide-react";
-import { getPayoutAccount, savePayoutAccount, type PayoutAccount } from "../lib/auth";
+import {
+  getWallet, savePayoutAccount, requestWithdraw,
+  type PayoutAccount, type WalletSale, type WalletWithdrawal,
+} from "../lib/auth";
 
-const maskAccount = (value: string) => (value.length > 4 ? `•••• •••• ${value.slice(-4)}` : value);
+const formatInr = (n: number) =>
+  `₹${Number(n || 0).toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 
 export default function WalletPage() {
   const navigate = useNavigate();
   const { username } = useParams<{ username: string }>();
 
   const [account, setAccount] = useState<PayoutAccount | null>(null);
+  const [sales, setSales] = useState<WalletSale[]>([]);
+  const [withdrawals, setWithdrawals] = useState<WalletWithdrawal[]>([]);
+  const [available, setAvailable] = useState(0);
+  const [lifetime, setLifetime] = useState(0);
+  const [salesCount, setSalesCount] = useState(0);
+  const [minWithdraw, setMinWithdraw] = useState(100);
+
   const [isLoading, setIsLoading] = useState(true);
   const [isEditing, setIsEditing] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
+  const [isWithdrawing, setIsWithdrawing] = useState(false);
   const [error, setError] = useState("");
   const [saved, setSaved] = useState(false);
+  const [withdrawMsg, setWithdrawMsg] = useState("");
   const [form, setForm] = useState({ account_holder: "", account_number: "", ifsc: "", upi_id: "" });
 
-  useEffect(() => {
-    (async () => {
-      const response = await getPayoutAccount();
-      if (response.account) {
-        setAccount(response.account);
-        setForm({
-          account_holder: response.account.account_holder,
-          account_number: response.account.account_number,
-          ifsc: response.account.ifsc,
-          upi_id: response.account.upi_id,
-        });
-      }
+  const load = useCallback(async () => {
+    const response = await getWallet();
+    if (response.error) {
+      setError(response.error);
       setIsLoading(false);
-    })();
+      return;
+    }
+    setAvailable(response.available_balance || 0);
+    setLifetime(response.lifetime_earnings || 0);
+    setSalesCount(response.sales_count || 0);
+    setMinWithdraw(response.min_withdraw || 100);
+    setSales(response.sales || []);
+    setWithdrawals(response.withdrawals || []);
+    if (response.account) {
+      setAccount(response.account);
+      setForm({
+        account_holder: response.account.account_holder,
+        account_number: "",
+        ifsc: response.account.ifsc,
+        upi_id: response.account.upi_id,
+      });
+    }
+    setIsLoading(false);
   }, []);
+
+  useEffect(() => {
+    load();
+  }, [load]);
 
   const handleSave = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -49,11 +75,35 @@ export default function WalletPage() {
       setAccount(response.account);
       setIsEditing(false);
       setSaved(true);
+      setForm((f) => ({ ...f, account_number: "" }));
       setTimeout(() => setSaved(false), 3000);
     }
   };
 
-  const showForm = isEditing || (!isLoading && !account);
+  const handleWithdraw = async () => {
+    setError("");
+    setWithdrawMsg("");
+    if (!account?.has_account) {
+      setError("Add bank details before withdrawing");
+      setIsEditing(true);
+      return;
+    }
+    if (available < minWithdraw) {
+      setError(`Minimum withdrawal is ₹${minWithdraw}`);
+      return;
+    }
+    setIsWithdrawing(true);
+    const response = await requestWithdraw(available);
+    setIsWithdrawing(false);
+    if (response.error) {
+      setError(response.error);
+      return;
+    }
+    setWithdrawMsg("Withdrawal requested. Funds will be sent to your bank after review.");
+    await load();
+  };
+
+  const showForm = isEditing || (!isLoading && !account?.has_account);
 
   return (
     <div className="min-h-screen bg-zinc-50 pt-14 pb-16 md:py-10">
@@ -65,7 +115,17 @@ export default function WalletPage() {
           <h1 className="text-xl font-bold text-zinc-900">Wallet</h1>
         </div>
 
-        {/* Balance card */}
+        {error && (
+          <div className="mb-4 bg-red-50 text-red-600 p-3 rounded-xl flex items-center gap-2 text-sm font-medium">
+            <AlertCircle className="w-4 h-4 shrink-0" /> {error}
+          </div>
+        )}
+        {withdrawMsg && (
+          <div className="mb-4 bg-emerald-50 text-emerald-600 p-3 rounded-xl flex items-center gap-2 text-sm font-medium">
+            <CheckCircle2 className="w-4 h-4 shrink-0" /> {withdrawMsg}
+          </div>
+        )}
+
         <motion.div
           initial={{ opacity: 0, y: 12 }}
           animate={{ opacity: 1, y: 0 }}
@@ -74,19 +134,22 @@ export default function WalletPage() {
           <div className="flex items-center gap-2 text-rose-100 text-sm font-medium mb-1">
             <Wallet className="w-4 h-4" /> Available balance
           </div>
-          <div className="text-4xl font-bold mb-5">₹0.00</div>
+          <div className="text-4xl font-bold mb-5">
+            {isLoading ? "…" : formatInr(available)}
+          </div>
           <div className="flex items-center justify-between gap-3">
-            <div className="text-xs text-rose-100">Minimum withdrawal ₹100</div>
+            <div className="text-xs text-rose-100">Minimum withdrawal ₹{minWithdraw}</div>
             <button
-              disabled
-              className="px-5 py-2.5 bg-white/95 text-rose-600 rounded-xl text-sm font-bold disabled:opacity-60 disabled:cursor-not-allowed"
+              onClick={handleWithdraw}
+              disabled={isLoading || isWithdrawing || available < minWithdraw}
+              className="px-5 py-2.5 bg-white/95 text-rose-600 rounded-xl text-sm font-bold disabled:opacity-60 disabled:cursor-not-allowed flex items-center gap-2"
             >
+              {isWithdrawing && <Loader2 className="w-4 h-4 animate-spin" />}
               Withdraw
             </button>
           </div>
         </motion.div>
 
-        {/* Stats */}
         <motion.div
           initial={{ opacity: 0, y: 12 }}
           animate={{ opacity: 1, y: 0 }}
@@ -95,15 +158,14 @@ export default function WalletPage() {
         >
           <div className="bg-white rounded-2xl border border-zinc-200 p-4 shadow-sm">
             <div className="text-xs text-zinc-500 font-medium mb-1">Content sales</div>
-            <div className="text-2xl font-bold text-zinc-900">0</div>
+            <div className="text-2xl font-bold text-zinc-900">{isLoading ? "…" : salesCount}</div>
           </div>
           <div className="bg-white rounded-2xl border border-zinc-200 p-4 shadow-sm">
             <div className="text-xs text-zinc-500 font-medium mb-1">Lifetime earnings</div>
-            <div className="text-2xl font-bold text-zinc-900">₹0</div>
+            <div className="text-2xl font-bold text-zinc-900">{isLoading ? "…" : formatInr(lifetime)}</div>
           </div>
         </motion.div>
 
-        {/* Bank details */}
         <motion.div
           initial={{ opacity: 0, y: 12 }}
           animate={{ opacity: 1, y: 0 }}
@@ -114,18 +176,13 @@ export default function WalletPage() {
             <h2 className="font-bold text-zinc-900 flex items-center gap-2">
               <Landmark className="w-5 h-5 text-rose-500" /> Bank details
             </h2>
-            {account && !isEditing && (
+            {account?.has_account && !isEditing && (
               <button onClick={() => setIsEditing(true)} className="text-rose-500 hover:text-rose-600 text-sm font-bold flex items-center gap-1">
                 <Pencil className="w-3.5 h-3.5" /> Edit
               </button>
             )}
           </div>
 
-          {error && (
-            <div className="mb-4 bg-red-50 text-red-600 p-3 rounded-xl flex items-center gap-2 text-sm font-medium">
-              <AlertCircle className="w-4 h-4 shrink-0" /> {error}
-            </div>
-          )}
           {saved && (
             <div className="mb-4 bg-emerald-50 text-emerald-600 p-3 rounded-xl flex items-center gap-2 text-sm font-medium">
               <CheckCircle2 className="w-4 h-4 shrink-0" /> Bank details saved.
@@ -157,7 +214,7 @@ export default function WalletPage() {
                   onChange={(e) => setForm({ ...form, account_number: e.target.value.replace(/\D/g, "") })}
                   required
                   maxLength={18}
-                  placeholder="9-18 digit account number"
+                  placeholder={account?.has_account ? `Re-enter (saved ${account.account_number_masked})` : "9-18 digit account number"}
                   className="w-full px-4 py-3 border border-zinc-200 rounded-xl text-sm focus:border-rose-500 focus:ring-2 focus:ring-rose-500/20 bg-zinc-50 focus:bg-white outline-none"
                 />
               </div>
@@ -186,7 +243,7 @@ export default function WalletPage() {
                 </div>
               </div>
               <div className="flex gap-3 pt-1">
-                {account && (
+                {account?.has_account && (
                   <button
                     type="button"
                     onClick={() => { setIsEditing(false); setError(""); }}
@@ -207,31 +264,71 @@ export default function WalletPage() {
           ) : account ? (
             <div className="space-y-3 text-sm">
               <div className="flex justify-between"><span className="text-zinc-500">Account holder</span><span className="font-semibold text-zinc-900">{account.account_holder}</span></div>
-              <div className="flex justify-between"><span className="text-zinc-500">Account number</span><span className="font-semibold text-zinc-900">{maskAccount(account.account_number)}</span></div>
+              <div className="flex justify-between"><span className="text-zinc-500">Account number</span><span className="font-semibold text-zinc-900">{account.account_number_masked}</span></div>
               <div className="flex justify-between"><span className="text-zinc-500">IFSC</span><span className="font-semibold text-zinc-900">{account.ifsc}</span></div>
               {account.upi_id && <div className="flex justify-between"><span className="text-zinc-500">UPI ID</span><span className="font-semibold text-zinc-900">{account.upi_id}</span></div>}
             </div>
           ) : null}
         </motion.div>
 
-        {/* Sales */}
         <motion.div
           initial={{ opacity: 0, y: 12 }}
           animate={{ opacity: 1, y: 0 }}
           transition={{ delay: 0.15 }}
-          className="bg-white rounded-3xl border border-zinc-200 p-5 sm:p-6 shadow-sm"
+          className="bg-white rounded-3xl border border-zinc-200 p-5 sm:p-6 shadow-sm mb-4"
         >
           <h2 className="font-bold text-zinc-900 flex items-center gap-2 mb-4">
             <ShoppingBag className="w-5 h-5 text-rose-500" /> Content sales
           </h2>
-          <div className="py-8 flex flex-col items-center text-center">
-            <div className="w-14 h-14 rounded-2xl bg-rose-50 flex items-center justify-center mb-3 text-rose-400">
-              <IndianRupee className="w-7 h-7" />
+          {sales.length === 0 ? (
+            <div className="py-8 flex flex-col items-center text-center">
+              <div className="w-14 h-14 rounded-2xl bg-rose-50 flex items-center justify-center mb-3 text-rose-400">
+                <IndianRupee className="w-7 h-7" />
+              </div>
+              <p className="text-zinc-900 font-semibold text-sm mb-1">No sales yet</p>
+              <p className="text-zinc-500 text-xs max-w-[240px]">When fans unlock your paid posts, every sale will appear here.</p>
             </div>
-            <p className="text-zinc-900 font-semibold text-sm mb-1">No sales yet</p>
-            <p className="text-zinc-500 text-xs max-w-[240px]">When fans unlock your paid posts, every sale will appear here.</p>
-          </div>
+          ) : (
+            <ul className="divide-y divide-zinc-100">
+              {sales.map((sale) => (
+                <li key={sale.id} className="py-3 flex items-start justify-between gap-3">
+                  <div className="min-w-0">
+                    <p className="text-sm font-semibold text-zinc-900 truncate">
+                      {sale.caption || `Post ${sale.post_public_id}`}
+                    </p>
+                    <p className="text-xs text-zinc-500 mt-0.5">
+                      {sale.paid_at ? new Date(sale.paid_at).toLocaleString() : ""}
+                    </p>
+                  </div>
+                  <span className="text-sm font-bold text-emerald-600 shrink-0">{formatInr(sale.amount)}</span>
+                </li>
+              ))}
+            </ul>
+          )}
         </motion.div>
+
+        {withdrawals.length > 0 && (
+          <motion.div
+            initial={{ opacity: 0, y: 12 }}
+            animate={{ opacity: 1, y: 0 }}
+            className="bg-white rounded-3xl border border-zinc-200 p-5 sm:p-6 shadow-sm"
+          >
+            <h2 className="font-bold text-zinc-900 mb-4">Withdrawals</h2>
+            <ul className="divide-y divide-zinc-100">
+              {withdrawals.map((w) => (
+                <li key={w.id} className="py-3 flex items-center justify-between gap-3 text-sm">
+                  <div>
+                    <p className="font-semibold text-zinc-900">{formatInr(w.amount)}</p>
+                    <p className="text-xs text-zinc-500">{new Date(w.created_at).toLocaleString()} · ••••{w.account_number_last4}</p>
+                  </div>
+                  <span className={`text-xs font-bold uppercase ${
+                    w.status === "paid" ? "text-emerald-600" : w.status === "rejected" ? "text-red-500" : "text-amber-600"
+                  }`}>{w.status}</span>
+                </li>
+              ))}
+            </ul>
+          </motion.div>
+        )}
       </div>
     </div>
   );

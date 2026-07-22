@@ -6,7 +6,7 @@ import { HowItWorks } from "./components/HowItWorks";
 import { CommunityCTA } from "./components/CommunityCTA";
 import { Footer } from "./components/Footer";
 
-import { AuthProvider, useAuth } from "./lib/useAuth";
+import { AuthProvider, RequireAuth, useAuth } from "./lib/useAuth";
 import CreatorLayout from "./components/CreatorLayout";
 
 import LoginPage from "./pages/LoginPage";
@@ -97,16 +97,22 @@ function UsernameRouteSwitch() {
   const { user, loading } = useAuth();
 
   const looksLikePublicSlug = /^.+\d{5}$/.test(slug || "");
-  if (!looksLikePublicSlug) return <CreatorLayout />;
 
-  // Usernames may themselves end in digits (e.g. obuser1784657181), so wait
-  // for the session before deciding whether this is the user's own dashboard.
+  // Wait for session before routing so consumers aren't bounced through
+  // CreatorLayout → /userlogin when they hit /:username without a serial.
   if (loading) {
     return (
       <div className="min-h-screen flex items-center justify-center bg-zinc-50">
         <div className="w-7 h-7 border-2 border-rose-500 border-t-transparent rounded-full animate-spin" />
       </div>
     );
+  }
+
+  if (!looksLikePublicSlug) {
+    if (user?.user_metadata?.role === "user") {
+      return <Navigate to="/user-inbox" replace />;
+    }
+    return <CreatorLayout />;
   }
 
   const ownUsername = user?.user_metadata?.username;
@@ -135,10 +141,11 @@ export default function App() {
             <Route path="/usersignup" element={<UserSignup />} />
             <Route path="/userotpverify" element={<UserOtpVerify />} />
             <Route path="/userpasswordreset" element={<UserPasswordReset />} />
-            <Route path="/view/:postId" element={<MediaViewerPage />} />
-            <Route path="/payment-confirmation" element={<PaymentConfirmationPage />} />
-            <Route path="/user-inbox" element={<InboxPage />} />
-            <Route path="/user-chat/:conversationId" element={<ChatPage />} />
+            <Route path="/view/:postId" element={<RequireAuth><MediaViewerPage /></RequireAuth>} />
+            <Route path="/report/:postId" element={<RequireAuth><ReportPostPage /></RequireAuth>} />
+            <Route path="/payment-confirmation" element={<RequireAuth><PaymentConfirmationPage /></RequireAuth>} />
+            <Route path="/user-inbox" element={<RequireAuth><InboxPage /></RequireAuth>} />
+            <Route path="/user-chat/:conversationId" element={<RequireAuth><ChatPage /></RequireAuth>} />
 
             {/* Legacy paths redirect to /<username>/... */}
             <Route path="/dashboard" element={<LegacyRedirect />} />
