@@ -29,9 +29,13 @@ const fmtDate = (iso: string) => new Date(iso).toLocaleString(undefined, {
 });
 
 export default function AdminDashboardPage() {
-  const { adminId } = useParams<{ adminId: string }>();
+  const { username } = useParams<{ username: string }>();
   const navigate = useNavigate();
   const { user, loading, signOut } = useAuth();
+
+  const adminId = username?.match(
+    /^admin([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/i,
+  )?.[1] || "";
 
   const [tab, setTab] = useState<AdminTab>("overview");
   const [menuOpen, setMenuOpen] = useState(false);

@@ -98,6 +98,12 @@ function UsernameRouteSwitch() {
   const { username: slug } = useParams<{ username: string }>();
   const { user, loading } = useAuth();
 
+  // /admin<uuid> is caught by /:username in React Router 7 (no mid-segment params).
+  const adminId = slug?.match(
+    /^admin([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/i,
+  )?.[1];
+  if (adminId) return <AdminDashboardPage />;
+
   const looksLikePublicSlug = /^.+\d{5}$/.test(slug || "");
 
   // Wait for session before routing so consumers aren't bounced through
@@ -143,7 +149,6 @@ export default function App() {
             <Route path="/refund-policy" element={<AuthLayout><RefundPolicyPage /></AuthLayout>} />
             <Route path="/contact-us" element={<AuthLayout><ContactUsPage /></AuthLayout>} />
             <Route path="/adminlogin" element={<AdminLoginPage />} />
-            <Route path="/admin:adminId" element={<AdminDashboardPage />} />
             <Route path="/userlogin" element={<UserLogin />} />
             <Route path="/usersignup" element={<UserSignup />} />
             <Route path="/userotpverify" element={<UserOtpVerify />} />
