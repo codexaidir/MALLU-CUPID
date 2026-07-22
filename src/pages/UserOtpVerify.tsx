@@ -1,8 +1,9 @@
 import React, { useEffect, useRef, useState } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
-import { AlertCircle, KeyRound, Loader2 } from "lucide-react";
+import { AlertCircle, Loader2 } from "lucide-react";
 import { userResend, userVerify } from "../lib/auth";
 import { useAuth } from "../lib/useAuth";
+import { BrandIcon } from "../components/BrandMark";
 
 export default function UserOtpVerify() {
   const navigate = useNavigate();
@@ -55,7 +56,7 @@ export default function UserOtpVerify() {
   return (
     <div className="min-h-screen bg-gradient-to-b from-rose-50 to-white px-5 py-10 flex items-center justify-center">
       <div className="w-full max-w-sm bg-white rounded-3xl border border-rose-100 shadow-xl shadow-rose-100/50 p-7 text-center">
-        <div className="w-16 h-16 rounded-full bg-rose-50 text-rose-500 flex items-center justify-center mx-auto mb-5"><KeyRound className="w-8 h-8" /></div>
+        <BrandIcon size="lg" className="mx-auto mb-5" rounded="rounded-2xl" />
         <h1 className="text-2xl font-bold text-zinc-900">Verify your email</h1>
         <p className="text-sm text-zinc-500 mt-2">Enter the 6-digit code sent to<br /><strong className="text-zinc-700">{email}</strong></p>
         {error && <div className="mt-5 bg-red-50 text-red-600 rounded-xl p-3 text-sm flex gap-2 text-left"><AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />{error}</div>}

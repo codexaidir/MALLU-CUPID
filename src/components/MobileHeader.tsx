@@ -1,7 +1,8 @@
 import React, { useState } from 'react';
-import { LayoutDashboard, LogOut, MessageCircle, Loader2 } from 'lucide-react';
+import { LogOut, MessageCircle, Loader2 } from 'lucide-react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { useAuth } from '../lib/useAuth';
+import { BrandIcon } from './BrandMark';
 
 export function MobileHeader() {
   const navigate = useNavigate();
@@ -20,9 +21,7 @@ export function MobileHeader() {
   return (
     <header className="md:hidden fixed top-0 left-0 right-0 h-14 bg-white border-b border-zinc-200 z-[100] flex items-center justify-between px-4">
       <button onClick={() => navigate(base)} className="active:opacity-70 transition-opacity" aria-label="Home">
-        <div className="w-8 h-8 bg-rose-500 rounded-lg flex items-center justify-center">
-          <LayoutDashboard className="w-4 h-4 text-white" />
-        </div>
+        <BrandIcon size="sm" rounded="rounded-lg" />
       </button>
       <div className="flex items-center gap-1">
         <button

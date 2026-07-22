@@ -8,7 +8,7 @@ const AUTH_EMAIL_FROM = Deno.env.get('AUTH_EMAIL_FROM') || 'welcome@mallucupid.c
 const AUTH_CORS_ORIGIN = Deno.env.get('AUTH_CORS_ORIGIN') || 'https://www.mallucupid.com'
 const ALLOWED_CORS_ORIGINS = AUTH_CORS_ORIGIN.split(',').map((origin) => origin.trim()).filter(Boolean)
 const PUBLIC_APP_URL = (Deno.env.get('AUTH_PUBLIC_APP_URL') || ALLOWED_CORS_ORIGINS[0] || 'https://www.mallucupid.com').replace(/\/$/, '')
-const LOGO_URL = `${PUBLIC_APP_URL}/mallucupid-icon.svg`
+const LOGO_URL = 'https://res.cloudinary.com/dsamz0zji/image/upload/v1784680966/mallucupidlogo_a44gud.png'
 
 if (!SUPABASE_URL || !SERVICE_ROLE_KEY || !ANON_KEY) {
   throw new Error('Missing SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, or SUPABASE_ANON_KEY')
@@ -934,6 +934,10 @@ const handleUserVerify = async (req: Request) => {
   if (!validEmail(email) || !/^\d{6}$/.test(token)) {
     return jsonResponse({ error: 'Enter a valid email and 6-digit code' }, 400, {}, [], origin)
   }
+  const limited = await enforceRateLimit(`verify:email:${email}`, 20, 15 * 60 * 1000)
+  if (!limited.ok) return jsonResponse({ error: limited.error }, 429, {}, [], origin)
+  const ipLimited = await enforceRateLimit(`verify:ip:${clientIp(req)}`, 40, 15 * 60 * 1000)
+  if (!ipLimited.ok) return jsonResponse({ error: ipLimited.error }, 429, {}, [], origin)
 
   const lookup = await fetch(
     `${SUPABASE_URL}/rest/v1/email_verifications?email=eq.${encodeURIComponent(email)}&token=eq.${token}&purpose=eq.user_signup&used=eq.false&select=*&order=created_at.desc&limit=1`,
@@ -942,7 +946,16 @@ const handleUserVerify = async (req: Request) => {
   const rows = lookup.ok ? await lookup.json().catch(() => []) : []
   const row = Array.isArray(rows) && rows.length ? rows[0] : null
   if (!row || new Date(row.expires_at) < new Date()) {
+    const pendingRes = await fetch(
+      `${SUPABASE_URL}/rest/v1/email_verifications?email=eq.${encodeURIComponent(email)}&purpose=eq.user_signup&used=eq.false&select=id,attempts&order=created_at.desc&limit=1`,
+      { headers: { ...authHeaders(true) } },
+    )
+    const pending = pendingRes.ok ? await pendingRes.json().catch(() => []) : []
+    if (Array.isArray(pending) && pending[0]?.id) await bumpOtpAttempts(pending[0].id, pending[0].attempts || 0)
     return jsonResponse({ error: 'Invalid or expired verification code' }, 400, {}, [], origin)
+  }
+  if ((row.attempts || 0) >= MAX_OTP_ATTEMPTS) {
+    return jsonResponse({ error: 'Too many attempts. Start signup again.' }, 429, {}, [], origin)
   }
 
   const name = typeof row.payload?.name === 'string' ? row.payload.name.trim() : ''
@@ -1005,6 +1018,8 @@ const handleUserResend = async (req: Request) => {
   const origin = req.headers.get('origin')
   const email = normalizeEmail((await parseJson(req)).email)
   if (!validEmail(email)) return jsonResponse({ error: 'Enter a valid email address' }, 400, {}, [], origin)
+  const limited = await enforceRateLimit(`otp:email:${email}`, 8, 15 * 60 * 1000)
+  if (!limited.ok) return jsonResponse({ error: limited.error }, 429, {}, [], origin)
   const lookup = await fetch(
     `${SUPABASE_URL}/rest/v1/email_verifications?email=eq.${encodeURIComponent(email)}&purpose=eq.user_signup&used=eq.false&select=payload&order=created_at.desc&limit=1`,
     { headers: { ...authHeaders(true) } },
@@ -1052,6 +1067,11 @@ const handleUserReset = async (req: Request) => {
   if (!validEmail(email) || !/^\d{6}$/.test(token) || !validPassword(password)) {
     return jsonResponse({ error: 'Valid email, 6-digit code, and 8+ character password are required' }, 400, {}, [], origin)
   }
+  const limited = await enforceRateLimit(`verify:email:${email}`, 20, 15 * 60 * 1000)
+  if (!limited.ok) return jsonResponse({ error: limited.error }, 429, {}, [], origin)
+  const ipLimited = await enforceRateLimit(`verify:ip:${clientIp(req)}`, 40, 15 * 60 * 1000)
+  if (!ipLimited.ok) return jsonResponse({ error: ipLimited.error }, 429, {}, [], origin)
+
   const lookup = await fetch(
     `${SUPABASE_URL}/rest/v1/email_verifications?email=eq.${encodeURIComponent(email)}&token=eq.${token}&purpose=eq.user_reset&used=eq.false&select=*&order=created_at.desc&limit=1`,
     { headers: { ...authHeaders(true) } },
@@ -1059,7 +1079,16 @@ const handleUserReset = async (req: Request) => {
   const rows = lookup.ok ? await lookup.json().catch(() => []) : []
   const row = Array.isArray(rows) && rows.length ? rows[0] : null
   if (!row || new Date(row.expires_at) < new Date()) {
+    const pendingRes = await fetch(
+      `${SUPABASE_URL}/rest/v1/email_verifications?email=eq.${encodeURIComponent(email)}&purpose=eq.user_reset&used=eq.false&select=id,attempts&order=created_at.desc&limit=1`,
+      { headers: { ...authHeaders(true) } },
+    )
+    const pending = pendingRes.ok ? await pendingRes.json().catch(() => []) : []
+    if (Array.isArray(pending) && pending[0]?.id) await bumpOtpAttempts(pending[0].id, pending[0].attempts || 0)
     return jsonResponse({ error: 'Invalid or expired verification code' }, 400, {}, [], origin)
+  }
+  if ((row.attempts || 0) >= MAX_OTP_ATTEMPTS) {
+    return jsonResponse({ error: 'Too many attempts. Request a new reset code.' }, 429, {}, [], origin)
   }
   const userId = row.payload?.user_id
   const account = userId ? await getAccount(userId) : null
@@ -1233,12 +1262,17 @@ const signMediaPaths = async (paths: string[], expiresIn = MEDIA_TTL_SECONDS): P
 }
 
 const decoratePosts = async (posts: Array<Record<string, unknown>>) => {
-  // Never expose storage paths or long-lived CDN URLs. Clients only receive
-  // auth-gated secure-media endpoints; access is re-checked on every request.
+  // Issue short-lived signed storage URLs only after the calling handler has
+  // already authenticated the user. Avoids cross-origin cookie auth on <img>/<video>.
+  const allPaths: string[] = []
+  for (const post of posts) {
+    const paths = Array.isArray(post.media_paths) ? post.media_paths as string[] : []
+    for (const path of paths) if (typeof path === 'string' && path) allPaths.push(path)
+  }
+  const signed = await signMediaPaths(allPaths)
   return posts.map((post) => {
     const paths = Array.isArray(post.media_paths) ? post.media_paths as string[] : []
-    const publicId = String(post.public_id || '')
-    const mediaUrls = paths.map((_, index) => securePostMediaUrl(publicId, index))
+    const mediaUrls = paths.map((path) => signed[path] || '').filter(Boolean)
     return {
       id: post.id,
       public_id: post.public_id,
@@ -1307,17 +1341,26 @@ const handlePublicProfile = async (req: Request, url: URL) => {
   const postRows = postsRes.ok ? await postsRes.json().catch(() => []) : []
   const posts = Array.isArray(postRows) ? postRows : []
 
-  // Guests never receive playable media. Authenticated viewers only get
-  // auth-gated secure-media URLs for free posts. Paid tiles stay locked here.
+  // Authenticated viewers get short-lived signed previews for free posts only.
+  // Paid tiles stay locked on this endpoint (unlock via /post after purchase).
+  const previewPaths: string[] = []
+  for (const p of posts) {
+    if (viewer?.id && p.is_paid !== true) {
+      const paths = Array.isArray(p.media_paths) ? p.media_paths as string[] : []
+      if (paths[0]) previewPaths.push(paths[0])
+    }
+  }
+  const signedPreviews = await signMediaPaths(previewPaths)
   const publicPosts = posts.map((p) => {
     const paths = Array.isArray(p.media_paths) ? p.media_paths as string[] : []
     const canPreview = Boolean(viewer?.id) && p.is_paid !== true
+    const preview = canPreview && paths[0] ? (signedPreviews[paths[0]] || '') : ''
     return {
       public_id: p.public_id,
       media_type: p.media_type,
       is_paid: p.is_paid === true,
       price: p.is_paid === true ? p.price : 0,
-      media_url: canPreview ? securePostMediaUrl(String(p.public_id), 0) : '',
+      media_url: preview,
       media_count: paths.length,
       like_count: Number(p.like_count) || 0,
       view_count: Number(p.view_count) || 0,
@@ -1719,29 +1762,52 @@ const handleGetWallet = async (req: Request) => {
   const user = await requireRole(req, 'creator')
   if (!user?.id) return jsonResponse({ error: 'Unauthorized' }, 401, {}, [], origin)
 
-  const salesRes = await fetch(
-    `${SUPABASE_URL}/rest/v1/post_purchases?creator_id=eq.${user.id}&status=eq.paid&select=id,amount,amount_paise,paid_at,post_id,user_id&order=paid_at.desc&limit=100`,
-    { headers: { ...authHeaders(true) } },
-  )
+  // Lifetime sum must include ALL paid sales (not the display list's limit=100).
+  const [lifetimeRes, salesRes, wdRes, countRes, payoutRes] = await Promise.all([
+    fetch(`${SUPABASE_URL}/rest/v1/rpc/wallet_lifetime_paise`, {
+      method: 'POST',
+      headers: { ...authHeaders(true) },
+      body: JSON.stringify({ p_creator_id: user.id }),
+    }),
+    fetch(
+      `${SUPABASE_URL}/rest/v1/post_purchases?creator_id=eq.${user.id}&status=eq.paid&select=id,amount,amount_paise,paid_at,post_id,user_id&order=paid_at.desc&limit=100`,
+      { headers: { ...authHeaders(true) } },
+    ),
+    fetch(
+      `${SUPABASE_URL}/rest/v1/wallet_withdrawals?creator_id=eq.${user.id}&select=id,amount_paise,status,account_holder,account_number_last4,ifsc,upi_id,created_at,processed_at&order=created_at.desc&limit=50`,
+      { headers: { ...authHeaders(true) } },
+    ),
+    fetch(
+      `${SUPABASE_URL}/rest/v1/post_purchases?creator_id=eq.${user.id}&status=eq.paid&select=id`,
+      { method: 'HEAD', headers: { ...authHeaders(true), Prefer: 'count=exact', Range: '0-0' } },
+    ),
+    fetch(
+      `${SUPABASE_URL}/rest/v1/payout_accounts?user_id=eq.${user.id}&select=account_holder,account_number,ifsc,upi_id,updated_at&limit=1`,
+      { headers: { ...authHeaders(true) } },
+    ),
+  ])
+
   if (!salesRes.ok) return jsonResponse({ error: 'Failed to load sales' }, 500, {}, [], origin)
   const salesRaw = await salesRes.json().catch(() => [])
   const salesRows = Array.isArray(salesRaw) ? salesRaw : []
-
-  const wdRes = await fetch(
-    `${SUPABASE_URL}/rest/v1/wallet_withdrawals?creator_id=eq.${user.id}&select=id,amount_paise,status,account_holder,account_number_last4,ifsc,upi_id,created_at,processed_at&order=created_at.desc&limit=50`,
-    { headers: { ...authHeaders(true) } },
-  )
   const withdrawals = wdRes.ok ? await wdRes.json().catch(() => []) : []
 
-  let lifetimePaise = 0
-  for (const sale of salesRows) {
-    lifetimePaise += Number(sale.amount_paise || Math.round(Number(sale.amount || 0) * 100))
+  let lifetimePaise = Number(lifetimeRes.ok ? await lifetimeRes.json().catch(() => 0) : 0) || 0
+  if (!lifetimeRes.ok) {
+    // Fallback if RPC not yet applied: sum display rows only (incomplete).
+    for (const sale of salesRows) {
+      lifetimePaise += Number(sale.amount_paise || Math.round(Number(sale.amount || 0) * 100))
+    }
   }
   let reservedPaise = 0
   for (const w of Array.isArray(withdrawals) ? withdrawals : []) {
     if (w.status === 'pending' || w.status === 'paid') reservedPaise += Number(w.amount_paise || 0)
   }
   const availablePaise = Math.max(0, lifetimePaise - reservedPaise)
+  const salesCountHeader = (countRes.headers.get('content-range') || '').split('/')[1]
+  const salesCount = salesCountHeader && salesCountHeader !== '*'
+    ? Number(salesCountHeader) || salesRows.length
+    : salesRows.length
 
   const postIds = [...new Set(salesRows.map((s: { post_id: string }) => s.post_id).filter(Boolean))]
   let postMap: Record<string, { public_id: string; caption: string }> = {}
@@ -1769,10 +1835,6 @@ const handleGetWallet = async (req: Request) => {
     }
   })
 
-  const payoutRes = await fetch(
-    `${SUPABASE_URL}/rest/v1/payout_accounts?user_id=eq.${user.id}&select=account_holder,account_number,ifsc,upi_id,updated_at&limit=1`,
-    { headers: { ...authHeaders(true) } },
-  )
   const payoutRows = payoutRes.ok ? await payoutRes.json().catch(() => []) : []
   const payout = Array.isArray(payoutRows) && payoutRows.length ? payoutRows[0] : null
 
@@ -1781,7 +1843,7 @@ const handleGetWallet = async (req: Request) => {
     available_paise: availablePaise,
     lifetime_earnings: lifetimePaise / 100,
     lifetime_paise: lifetimePaise,
-    sales_count: sales.length,
+    sales_count: salesCount,
     min_withdraw: 100,
     sales,
     withdrawals: Array.isArray(withdrawals) ? withdrawals.map((w: Record<string, unknown>) => ({
@@ -1814,51 +1876,83 @@ const handleWalletWithdraw = async (req: Request) => {
     return jsonResponse({ error: 'Add bank details before withdrawing' }, 400, {}, [], origin)
   }
 
-  // Recalculate available balance server-side (never trust client).
-  const salesRes = await fetch(
-    `${SUPABASE_URL}/rest/v1/post_purchases?creator_id=eq.${user.id}&status=eq.paid&select=amount,amount_paise`,
-    { headers: { ...authHeaders(true) } },
-  )
-  const salesRows = salesRes.ok ? await salesRes.json().catch(() => []) : []
-  let lifetimePaise = 0
-  for (const sale of Array.isArray(salesRows) ? salesRows : []) {
-    lifetimePaise += Number(sale.amount_paise || Math.round(Number(sale.amount || 0) * 100))
-  }
-  const wdRes = await fetch(
-    `${SUPABASE_URL}/rest/v1/wallet_withdrawals?creator_id=eq.${user.id}&status=in.(pending,paid)&select=amount_paise`,
-    { headers: { ...authHeaders(true) } },
-  )
-  const wds = wdRes.ok ? await wdRes.json().catch(() => []) : []
-  let reservedPaise = 0
-  for (const w of Array.isArray(wds) ? wds : []) reservedPaise += Number(w.amount_paise || 0)
-  const availablePaise = Math.max(0, lifetimePaise - reservedPaise)
-  if (amountPaise > availablePaise) {
-    return jsonResponse({ error: 'Insufficient available balance' }, 400, {}, [], origin)
-  }
-
-  const insert = await fetch(`${SUPABASE_URL}/rest/v1/wallet_withdrawals`, {
+  // Atomic balance check + insert (prevents double-spend races).
+  const insert = await fetch(`${SUPABASE_URL}/rest/v1/rpc/request_wallet_withdrawal`, {
     method: 'POST',
-    headers: { ...authHeaders(true), Prefer: 'return=representation' },
-    body: JSON.stringify([{
-      creator_id: user.id,
-      amount_paise: amountPaise,
-      status: 'pending',
-      account_holder: payout.account_holder,
-      account_number_last4: String(payout.account_number).slice(-4),
-      ifsc: payout.ifsc,
-      upi_id: payout.upi_id || '',
-    }]),
+    headers: { ...authHeaders(true) },
+    body: JSON.stringify({
+      p_creator_id: user.id,
+      p_amount_paise: amountPaise,
+      p_account_holder: payout.account_holder,
+      p_account_number_last4: String(payout.account_number).slice(-4),
+      p_ifsc: payout.ifsc,
+      p_upi_id: payout.upi_id || '',
+    }),
   })
   if (!insert.ok) {
-    console.error('Withdraw failed:', await insert.text().catch(() => ''))
+    const errText = await insert.text().catch(() => '')
+    console.error('Withdraw failed:', errText)
+    if (/insufficient_balance/i.test(errText)) {
+      return jsonResponse({ error: 'Insufficient available balance' }, 400, {}, [], origin)
+    }
+    if (/minimum_withdrawal/i.test(errText)) {
+      return jsonResponse({ error: 'Minimum withdrawal is ₹100' }, 400, {}, [], origin)
+    }
     return jsonResponse({ error: 'Failed to submit withdrawal' }, 500, {}, [], origin)
   }
-  const rows = await insert.json().catch(() => [])
-  const row = Array.isArray(rows) ? rows[0] : rows
+  const row = await insert.json().catch(() => null)
   return jsonResponse({
     status: 'withdrawal_requested',
     withdrawal: row ? { ...row, amount: amountPaise / 100 } : null,
   }, 200, {}, [], origin)
+}
+
+const AUTH_ADMIN_SECRET = Deno.env.get('AUTH_ADMIN_SECRET') || ''
+
+const requireAdminSecret = (req: Request) => {
+  if (!AUTH_ADMIN_SECRET) return false
+  const header = req.headers.get('authorization') || ''
+  const bearer = header.toLowerCase().startsWith('bearer ') ? header.slice(7).trim() : ''
+  const alt = req.headers.get('x-admin-secret') || ''
+  return bearer === AUTH_ADMIN_SECRET || alt === AUTH_ADMIN_SECRET
+}
+
+/** Mark a pending withdrawal paid or rejected. Ops-only (AUTH_ADMIN_SECRET). */
+const handleAdminWalletWithdraw = async (req: Request) => {
+  const origin = req.headers.get('origin')
+  if (!requireAdminSecret(req)) return jsonResponse({ error: 'Unauthorized' }, 401, {}, [], origin)
+
+  const body = await parseJson(req)
+  const id = typeof body.withdrawal_id === 'string' ? body.withdrawal_id.trim() : ''
+  const status = body.status === 'paid' || body.status === 'rejected' ? body.status : ''
+  const note = typeof body.note === 'string' ? body.note.trim().slice(0, 500) : ''
+  if (!/^[0-9a-f-]{36}$/i.test(id) || !status) {
+    return jsonResponse({ error: 'withdrawal_id and status (paid|rejected) required' }, 400, {}, [], origin)
+  }
+
+  const update: Record<string, unknown> = {
+    status,
+    processed_at: new Date().toISOString(),
+  }
+  if (note) update.note = note
+
+  const res = await fetch(
+    `${SUPABASE_URL}/rest/v1/wallet_withdrawals?id=eq.${id}&status=eq.pending`,
+    {
+      method: 'PATCH',
+      headers: { ...authHeaders(true), Prefer: 'return=representation' },
+      body: JSON.stringify(update),
+    },
+  )
+  if (!res.ok) {
+    console.error('Admin withdraw update failed:', await res.text().catch(() => ''))
+    return jsonResponse({ error: 'Failed to update withdrawal' }, 500, {}, [], origin)
+  }
+  const rows = await res.json().catch(() => [])
+  if (!Array.isArray(rows) || !rows.length) {
+    return jsonResponse({ error: 'Pending withdrawal not found' }, 404, {}, [], origin)
+  }
+  return jsonResponse({ status: 'updated', withdrawal: rows[0] }, 200, {}, [], origin)
 }
 
 const handleGetSupportTickets = async (req: Request) => {
@@ -2162,11 +2256,9 @@ const handleGetPost = async (req: Request, url: URL) => {
   const likedByMe = Array.isArray(likedRows) && likedRows.length > 0
 
   const paths = Array.isArray(post.media_paths) ? post.media_paths as string[] : []
-  // Only issue auth-gated URLs after the backend access check. Storage paths
-  // are never returned to the client.
-  const mediaUrls = hasAccess
-    ? paths.map((_, index) => securePostMediaUrl(String(post.public_id), index))
-    : []
+  // Short-lived signed URLs after server-side access check (no cross-origin cookie needed).
+  const signed = hasAccess ? await signMediaPaths(paths) : {}
+  const mediaUrls = hasAccess ? paths.map((path: string) => signed[path] || '').filter(Boolean) : []
 
   return jsonResponse({
     post: {
@@ -2581,6 +2673,87 @@ const handleVerifyPostPayment = async (req: Request) => {
   return jsonResponse({ status: 'paid' }, 200, {}, [], origin)
 }
 
+const RAZORPAY_WEBHOOK_SECRET = Deno.env.get('RAZORPAY_WEBHOOK_SECRET') || ''
+
+/** Server-to-server capture confirmation when the browser callback is lost. */
+const handleRazorpayWebhook = async (req: Request) => {
+  const origin = req.headers.get('origin')
+  if (!RAZORPAY_WEBHOOK_SECRET) {
+    return jsonResponse({ error: 'Webhook not configured' }, 503, {}, [], origin)
+  }
+  const raw = await req.text()
+  const signature = req.headers.get('x-razorpay-signature') || ''
+  const expected = await hmacSha256Hex(RAZORPAY_WEBHOOK_SECRET, raw)
+  if (!signature || expected !== signature) {
+    return jsonResponse({ error: 'Invalid signature' }, 400, {}, [], origin)
+  }
+
+  let payload: Record<string, unknown>
+  try {
+    payload = JSON.parse(raw)
+  } catch {
+    return jsonResponse({ error: 'Invalid JSON' }, 400, {}, [], origin)
+  }
+
+  const event = String(payload.event || '')
+  if (event !== 'payment.captured' && event !== 'order.paid') {
+    return jsonResponse({ status: 'ignored', event }, 200, {}, [], origin)
+  }
+
+  const paymentEntity = (payload.payload as Record<string, unknown>)?.payment as Record<string, unknown> | undefined
+  let payment = (paymentEntity?.entity || paymentEntity) as Record<string, unknown> | undefined
+  const orderEntity = (payload.payload as Record<string, unknown>)?.order as Record<string, unknown> | undefined
+  const order = (orderEntity?.entity || orderEntity) as Record<string, unknown> | undefined
+
+  let paymentId = String(payment?.id || '')
+  const orderId = String(payment?.order_id || order?.id || '')
+  if (!orderId) {
+    return jsonResponse({ status: 'ignored', reason: 'missing order' }, 200, {}, [], origin)
+  }
+  if (!paymentId) {
+    const payments = await razorpayGet(`/orders/${encodeURIComponent(orderId)}/payments`)
+    const items = Array.isArray(payments?.items) ? payments.items : []
+    const captured = items.find((p: Record<string, unknown>) => p.status === 'captured')
+    if (captured?.id) {
+      payment = captured
+      paymentId = String(captured.id)
+    }
+  }
+  if (!paymentId) {
+    return jsonResponse({ status: 'ignored', reason: 'missing payment' }, 200, {}, [], origin)
+  }
+
+  const purchaseRes = await fetch(
+    `${SUPABASE_URL}/rest/v1/post_purchases?razorpay_order_id=eq.${encodeURIComponent(orderId)}&select=id,status,amount,amount_paise,creator_id,user_id,post_id&limit=1`,
+    { headers: { ...authHeaders(true) } },
+  )
+  const purchaseRows = purchaseRes.ok ? await purchaseRes.json().catch(() => []) : []
+  const purchase = Array.isArray(purchaseRows) && purchaseRows.length ? purchaseRows[0] : null
+  if (!purchase) return jsonResponse({ status: 'ignored', reason: 'unknown order' }, 200, {}, [], origin)
+  if (purchase.status === 'paid') return jsonResponse({ status: 'already_paid' }, 200, {}, [], origin)
+
+  if (payment && !paymentMatchesPurchase(payment, purchase, orderId)) {
+    // order.paid may lack a full payment entity — fetch from Razorpay API.
+    const live = await razorpayGet(`/payments/${encodeURIComponent(paymentId)}`)
+    if (!live || !paymentMatchesPurchase(live, purchase, orderId) || live.status !== 'captured') {
+      return jsonResponse({ status: 'ignored', reason: 'payment mismatch' }, 200, {}, [], origin)
+    }
+  } else if (payment && payment.status && payment.status !== 'captured') {
+    return jsonResponse({ status: 'ignored', reason: 'not captured' }, 200, {}, [], origin)
+  }
+
+  const postRes = await fetch(
+    `${SUPABASE_URL}/rest/v1/posts?id=eq.${purchase.post_id}&select=id,creator_id,public_id&limit=1`,
+    { headers: { ...authHeaders(true) } },
+  )
+  const postRows = postRes.ok ? await postRes.json().catch(() => []) : []
+  const post = Array.isArray(postRows) && postRows.length ? postRows[0] : null
+  if (!post) return jsonResponse({ status: 'ignored', reason: 'post missing' }, 200, {}, [], origin)
+
+  const recorded = await recordPaidPurchase(purchase, post, String(purchase.user_id), paymentId)
+  return jsonResponse({ status: recorded ? 'paid' : 'pending' }, recorded ? 200 : 503, {}, [], origin)
+}
+
 const handlePostPaymentStatus = async (req: Request, url: URL) => {
   const origin = req.headers.get('origin')
   const user = await requireUser(req)
@@ -2850,6 +3023,7 @@ const handleAcceptConversation = async (req: Request) => {
   const convo = await getConversationForUser(typeof body.conversation_id === 'string' ? body.conversation_id : '', user.id)
   if (!convo) return jsonResponse({ error: 'Conversation not found' }, 404, {}, [], origin)
   if (convo.created_by === user.id) return jsonResponse({ error: 'Only the recipient can accept a request' }, 403, {}, [], origin)
+  if (convo.status === 'accepted') return jsonResponse({ status: 'accepted' }, 200, {}, [], origin)
 
   await fetch(`${SUPABASE_URL}/rest/v1/conversations?id=eq.${convo.id}`, {
     method: 'PATCH',
@@ -2865,17 +3039,15 @@ const handleAcceptConversation = async (req: Request) => {
   return jsonResponse({ status: 'accepted' }, 200, {}, [], origin)
 }
 
-const decorateMessage = async (msg: Record<string, unknown>, userId: string) => {
+const decorateMessage = async (msg: Record<string, unknown>, userId: string, signedChat: Record<string, string> = {}) => {
   const isMine = msg.sender_id === userId
   let mediaUrl = ''
   let onceState: string = 'none'
   if (msg.media_type && msg.media_path) {
     if (msg.is_once) {
-      // View-once media is never included inline; the recipient must call /message-view-once
       onceState = msg.viewed_at ? 'opened' : (isMine ? 'sent' : 'available')
     } else {
-      // Auth-gated endpoint re-checks conversation membership before signing.
-      mediaUrl = secureChatMediaUrl(String(msg.id))
+      mediaUrl = signedChat[String(msg.media_path)] || await signChatPath(String(msg.media_path), MEDIA_TTL_SECONDS)
     }
   }
   return {
@@ -2914,7 +3086,17 @@ const handleGetMessages = async (req: Request, url: URL) => {
   ])
 
   const rows = messagesRes.ok ? await messagesRes.json().catch(() => []) : []
-  const messages = await Promise.all((Array.isArray(rows) ? rows : []).map((m) => decorateMessage(m, user.id)))
+  const list = Array.isArray(rows) ? rows : []
+  const chatPaths = [...new Set(
+    list
+      .filter((m: Record<string, unknown>) => m.media_path && !m.is_once)
+      .map((m: Record<string, unknown>) => String(m.media_path)),
+  )]
+  const signedChat: Record<string, string> = {}
+  await Promise.all(chatPaths.map(async (path) => {
+    signedChat[path] = await signChatPath(path, MEDIA_TTL_SECONDS)
+  }))
+  const messages = await Promise.all(list.map((m) => decorateMessage(m, user.id, signedChat)))
 
   // Viewing the chat marks incoming messages as seen
   await fetch(
@@ -2992,6 +3174,19 @@ const handleSendMessage = async (req: Request) => {
   const blocks = await getBlockPair(user.id, peerId)
   if (blocks.blockedByMe) return jsonResponse({ error: 'You have blocked this user. Unblock to message.' }, 403, {}, [], origin)
   if (blocks.blockedMe) return jsonResponse({ error: 'Unable to message this user' }, 403, {}, [], origin)
+
+  // Pending requests: initiator may send only the first message until accepted.
+  if (convo.status === 'pending' && convo.created_by === user.id) {
+    const countRes = await fetch(
+      `${SUPABASE_URL}/rest/v1/messages?conversation_id=eq.${convo.id}&sender_id=eq.${user.id}&deleted_for_all=eq.false&select=id`,
+      { method: 'HEAD', headers: { ...authHeaders(true), Prefer: 'count=exact', Range: '0-0' } },
+    )
+    const total = (countRes.headers.get('content-range') || '').split('/')[1]
+    const existing = total && total !== '*' ? Number(total) || 0 : 0
+    if (existing >= 1) {
+      return jsonResponse({ error: 'Wait until they accept your message request' }, 403, {}, [], origin)
+    }
+  }
 
   const text = typeof body.body === 'string' ? body.body.trim() : ''
   const mediaPath = typeof body.media_path === 'string' ? body.media_path : ''
@@ -3339,6 +3534,7 @@ const routeRequest = async (req: Request) => {
   if (isRoute('payout-account') && req.method === 'POST') return handleSavePayoutAccount(req)
   if (isRoute('wallet') && req.method === 'GET') return handleGetWallet(req)
   if (isRoute('wallet-withdraw') && req.method === 'POST') return handleWalletWithdraw(req)
+  if (isRoute('admin-wallet-withdraw') && req.method === 'POST') return handleAdminWalletWithdraw(req)
   if (isRoute('support-tickets') && req.method === 'GET') return handleGetSupportTickets(req)
   if (isRoute('support-tickets') && req.method === 'POST') return handleCreateSupportTicket(req)
   if (isRoute('post') && req.method === 'GET') return handleGetPost(req, url)
@@ -3350,6 +3546,7 @@ const routeRequest = async (req: Request) => {
   if (isRoute('post-checkout') && req.method === 'POST') return handlePostCheckout(req)
   if (isRoute('post-verify-payment') && req.method === 'POST') return handleVerifyPostPayment(req)
   if (isRoute('post-payment-status') && req.method === 'GET') return handlePostPaymentStatus(req, url)
+  if (isRoute('razorpay-webhook') && req.method === 'POST') return handleRazorpayWebhook(req)
   if (isRoute('public-profile') && req.method === 'GET') return handlePublicProfile(req, url)
   if (isRoute('public-follow') && req.method === 'POST') return handlePublicFollow(req)
   if (isRoute('notifications') && req.method === 'GET') return handleGetNotifications(req)

@@ -129,6 +129,9 @@ function NotificationRow({
 export default function NotificationsPage() {
   const navigate = useNavigate();
   const { username } = useParams<{ username: string }>();
+  const homePath = username ? `/${username}` : "/user-inbox";
+  const loginPath = username ? "/login" : "/userlogin";
+  const notifRedirect = username ? `${username}/notifications` : "user-notifications";
 
   const [items, setItems] = useState<NotificationItem[]>([]);
   const [isLoading, setIsLoading] = useState(true);
@@ -144,6 +147,10 @@ export default function NotificationsPage() {
       const response = await getNotifications();
       if (cancelled) return;
       setIsLoading(false);
+      if (response.error && /unauthorized|login/i.test(response.error)) {
+        navigate(`${loginPath}?redirect=${encodeURIComponent(notifRedirect)}`, { replace: true });
+        return;
+      }
       if (response.error || !Array.isArray(response.notifications)) {
         setError(response.error || "Failed to load notifications.");
         return;
@@ -158,7 +165,7 @@ export default function NotificationsPage() {
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [navigate, loginPath, notifRedirect]);
 
   const groups = useMemo(() => {
     const fresh: NotificationItem[] = [];
@@ -178,18 +185,18 @@ export default function NotificationsPage() {
 
   const openNotification = (n: NotificationItem) => {
     if ((n.type === "like" || n.type === "purchase") && n.post_public_id) {
-      navigate(`/${username}/post/${n.post_public_id}`);
+      navigate(username ? `/${username}/post/${n.post_public_id}` : `/view/${n.post_public_id}`);
     } else if ((n.type === "request" || n.type === "accept") && n.conversation_id) {
-      navigate(`/${username}/chat/${n.conversation_id}`);
+      navigate(username ? `/${username}/chat/${n.conversation_id}` : `/user-chat/${n.conversation_id}`);
     }
   };
 
   return (
-    <div className="min-h-screen bg-zinc-50 pt-14 pb-16 md:py-10">
+    <div className={`min-h-screen bg-zinc-50 ${username ? "pt-14 pb-16 md:py-10" : "pt-6 pb-8"}`}>
       <div className="max-w-xl mx-auto px-4 md:px-0 pt-3 md:pt-0">
         <div className="flex items-center gap-3 mb-4">
           <button
-            onClick={() => navigate(`/${username}`)}
+            onClick={() => navigate(homePath)}
             className="p-2 -ml-2 rounded-full hover:bg-zinc-100 transition-colors"
             aria-label="Back"
           >

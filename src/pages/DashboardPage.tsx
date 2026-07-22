@@ -4,6 +4,7 @@ import { Link, useNavigate, useParams } from "react-router-dom";
 import { LogOut, LayoutDashboard, Users, CreditCard, Heart, Grid, PlaySquare, Play, Menu, X, Bell, ShieldCheck, BadgeCheck, Wallet, MoreVertical, Edit2, Trash2, Plus, Copy, Check, Inbox, Link2, ImagePlus, Radio, TrendingUp, Sparkles, UploadCloud, FileImage, FileVideo, Eye, LockKeyhole, Video, Layers, HelpCircle } from "lucide-react";
 import { getProfile, publicProfileSlug, type CreatorPost, type Profile, type ProfileStats } from "../lib/auth";
 import { useAuth } from "../lib/useAuth";
+import { BrandIcon } from "../components/BrandMark";
 
 export default function DashboardPage() {
   const { username: routeUsername } = useParams<{ username: string }>();
@@ -53,9 +54,7 @@ export default function DashboardPage() {
   const SidebarContent = ({ isExpanded = false }: { isExpanded?: boolean }) => (
     <div className={`flex flex-col h-full bg-white border-r border-zinc-200 py-6 w-full ${isExpanded ? 'px-6 items-start' : 'items-center'}`}>
       <div className={`mb-8 ${isExpanded ? 'flex items-center gap-3 w-full' : ''}`}>
-        <div className="w-10 h-10 bg-rose-500 rounded-xl flex items-center justify-center shrink-0">
-          <LayoutDashboard className="w-5 h-5 text-white" />
-        </div>
+        <BrandIcon size="md" />
         {isExpanded && <span className="font-display font-bold text-lg text-zinc-900">Creator Hub</span>}
       </div>
       <div className={`flex-grow flex flex-col space-y-4 w-full ${isExpanded ? 'items-stretch' : 'items-center'}`}>

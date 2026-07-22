@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { motion } from "motion/react";
-import { Search, MessageCircle, Loader2, UserPlus } from "lucide-react";
+import { Search, MessageCircle, Loader2, UserPlus, Bell } from "lucide-react";
 import {
   getConversations, searchUsers, startConversation,
   type ConversationItem,
@@ -32,6 +32,8 @@ export default function InboxPage() {
 
   const [conversations, setConversations] = useState<ConversationItem[]>([]);
   const [isLoading, setIsLoading] = useState(true);
+  const [loadError, setLoadError] = useState("");
+  const [startError, setStartError] = useState("");
   const [tab, setTab] = useState<Tab>('all');
   const [query, setQuery] = useState("");
   const [foundUsers, setFoundUsers] = useState<{ username: string; full_name: string; avatar_url: string }[]>([]);
@@ -46,7 +48,13 @@ export default function InboxPage() {
         navigate(`${loginPath}?redirect=${encodeURIComponent(inboxRedirect)}`, { replace: true });
         return;
       }
-      setConversations(response.conversations || []);
+      if (response.error) {
+        setLoadError(response.error);
+        setConversations([]);
+      } else {
+        setLoadError("");
+        setConversations(response.conversations || []);
+      }
       setIsLoading(false);
     };
     load();
@@ -93,12 +101,19 @@ export default function InboxPage() {
 
   const handleStartChat = async (targetUsername: string) => {
     if (isStarting) return;
+    setStartError("");
     setIsStarting(targetUsername);
     const response = await startConversation(targetUsername);
     setIsStarting("");
+    if (response.error && /unauthorized|login/i.test(response.error)) {
+      navigate(`${loginPath}?redirect=${encodeURIComponent(inboxRedirect)}`, { replace: true });
+      return;
+    }
     if (response.conversation_id) {
       navigate(chatPath(response.conversation_id));
+      return;
     }
+    setStartError(response.error || "Could not start chat. Try again.");
   };
 
   const tabs: { id: Tab; label: string }[] = [
@@ -110,7 +125,18 @@ export default function InboxPage() {
   return (
     <div className={`min-h-screen bg-white ${username ? "pt-14 pb-16 md:pt-8 md:pb-8" : "pt-6 pb-8"}`}>
       <main className="container mx-auto px-4 max-w-2xl py-4">
-        <h1 className={`text-xl font-bold text-zinc-900 mb-4 ${username ? "hidden md:block" : ""}`}>Inbox</h1>
+        <div className={`flex items-center justify-between mb-4 ${username ? "hidden md:flex" : ""}`}>
+          <h1 className="text-xl font-bold text-zinc-900">Inbox</h1>
+          {!username && (
+            <button
+              onClick={() => navigate("/user-notifications")}
+              className="p-2 rounded-full hover:bg-zinc-100 text-zinc-700"
+              aria-label="Notifications"
+            >
+              <Bell className="w-5 h-5" />
+            </button>
+          )}
+        </div>
 
         {/* Search */}
         <div className="relative mb-4">
@@ -141,6 +167,12 @@ export default function InboxPage() {
         {tab === 'requests' && requests.length > 0 && (
           <p className="text-xs text-zinc-400 mb-3 px-1">
             First messages from new people land here. Accept or reply to move a chat to All chats.
+          </p>
+        )}
+
+        {(loadError || startError) && (
+          <p className="text-sm text-red-500 mb-3 px-1" role="alert">
+            {startError || loadError}
           </p>
         )}
 

@@ -1,5 +1,5 @@
-import { Heart } from "lucide-react";
 import { Link } from "react-router-dom";
+import { BrandLogo } from "./BrandMark";
 
 export function Footer() {
   return (
@@ -7,10 +7,9 @@ export function Footer() {
       <div className="mx-auto max-w-7xl">
         <div className="grid grid-cols-1 gap-10 md:grid-cols-2 md:items-start">
           <div>
-            <div className="flex items-center gap-3">
-              <Heart className="h-6 w-6 text-rose-500 fill-rose-500" />
-              <span className="font-display text-lg font-bold text-zinc-900">MalluCupid</span>
-            </div>
+            <Link to="/" className="inline-flex" aria-label="MalluCupid home">
+              <BrandLogo size="md" />
+            </Link>
             <p className="mt-4 max-w-sm text-sm text-zinc-600">
               MalluCupid helps creators share free and paid content, chat with fans, and get paid securely via Razorpay.
             </p>

@@ -3,6 +3,7 @@ import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import { AlertCircle, ArrowRight, Eye, EyeOff, Loader2, Lock, Mail } from "lucide-react";
 import { userLogin } from "../lib/auth";
 import { useAuth } from "../lib/useAuth";
+import { BrandIcon } from "../components/BrandMark";
 
 export default function UserLogin() {
   const navigate = useNavigate();
@@ -29,7 +30,7 @@ export default function UserLogin() {
   return (
     <div className="min-h-screen bg-gradient-to-b from-rose-50 to-white px-5 py-10 flex items-center justify-center">
       <div className="w-full max-w-sm bg-white rounded-3xl border border-rose-100 shadow-xl shadow-rose-100/50 p-7">
-        <div className="w-11 h-11 rounded-2xl bg-rose-500 text-white flex items-center justify-center font-bold mb-6">M</div>
+        <BrandIcon size="md" className="mb-6" />
         <h1 className="text-2xl font-bold text-zinc-900">Welcome back</h1>
         <p className="text-sm text-zinc-500 mt-1 mb-7">Login to follow, chat, and unlock content.</p>
         {error && <div className="mb-5 bg-red-50 text-red-600 rounded-xl p-3 text-sm flex gap-2"><AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />{error}</div>}

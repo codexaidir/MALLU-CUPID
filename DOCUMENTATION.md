@@ -177,7 +177,7 @@ The application uses URL-based pagination (React Router) with the following rout
 - Creator auth (`/login`, `/signup`, `/verify-otp`) stays creator-only. `/login` rejects user-role accounts with **"You don't have a creator account"**. New creator signups write `role: creator` into both auth metadata and `user_accounts`.
 - Consumer auth pages: `/userlogin`, `/usersignup`, `/userotpverify`, `/userpasswordreset`. Endpoints: `POST /user-login`, `/user-signup`, `/user-verify`, `/user-resend`, `/user-forgot`, `/user-reset`. Signup = email + name + password → 6-digit OTP → session + return to `?redirect=<public slug>`. Reset = email → OTP → new password → same redirect. Follow / Chat / paid post open require login and send guests to `/userlogin?redirect=...`.
 - Public page redesign (reference link-in-bio layout): hero cover, Install PWA button, Login/Follow overlays, avatar, "Hi, I'm …", posts/followers, Follow + Chat Now, Exclusive Content photo/video tabs, then a large bottom **"Be a creator / Start Earning"** section that sits well below the posts (no overlay). PWA: `manifest.webmanifest`, icon, service worker; Install uses Chrome `beforeinstallprompt` when available, otherwise shows Android/iOS Add-to-Home-Screen instructions.
-- Guest content routes: `/view/:postId` (media viewer) and `/user-chat/:conversationId` for logged-in consumers outside the creator app shell.
+- Guest content routes: `/view/:postId` (media viewer), `/user-inbox`, `/user-notifications`, and `/user-chat/:conversationId` for logged-in consumers outside the creator app shell.
 
 ## Live Razorpay paid-post reconciliation
 
@@ -185,15 +185,23 @@ The application uses URL-based pagination (React Router) with the following rout
 - Clicking a paid tile on a public creator page first calls the authenticated backend `GET /post`. Owners and users with a permanent `post_purchases.status='paid'` row open `/view/:postId` immediately. Unpaid users call `POST /post-checkout`, which creates or safely reuses the same Razorpay order and opens the real Razorpay Checkout.
 - Migration `013` adds purchase audit fields: `creator_id`, `amount_paise`, `provider`, and `verified_at`, while the existing unique `(post_id,user_id)` enforces one permanent purchase record per user/post.
 - Razorpay callback goes to `/payment-confirmation?post=&order=`. The page verifies the HMAC callback server-side, then polls `GET /post-payment-status`. The backend independently fetches Razorpay payment/order data and validates order ID, captured status, INR currency, and exact immutable amount before granting access.
-- If the browser callback is lost after debit, the confirmation page and subsequent checkout reconcile the existing order through Razorpay's server API. A captured payment is recorded and unlocked; an authorized/processing payment shows **Confirmation pending / Do not pay again** rather than a false failure. Purchase recording is atomic/idempotent, so concurrent confirmation calls cannot duplicate the purchase notification.
+- If the browser callback is lost after debit, the confirmation page, `GET /post-payment-status`, and `POST /razorpay-webhook` (HMAC with `RAZORPAY_WEBHOOK_SECRET`) reconcile captured payments. An authorized/processing payment shows **Confirmation pending / Do not pay again**. Purchase recording is atomic/idempotent.
 
-## Wallet (creator earnings)
+- Brand assets: logo `https://res.cloudinary.com/dsamz0zji/image/upload/v1784680966/mallucupidlogo_a44gud.png`; app icon `https://res.cloudinary.com/dsamz0zji/image/upload/v1784680970/appicon_n1we3u.png` (headers, footer, PWA, emails, favicon).
+
+## Wallet / auth / media hardening (017–018)
 
 - Migration `017`: `wallet_withdrawals` + `auth_rate_limits`; revoke PostgREST grants on posts/likes/views/follows/purchases/payout/tickets/reports; drop public SELECT policies that leaked `media_paths`.
-- `GET /wallet`: available balance = paid purchase totals − pending/paid withdrawals; sales list; masked bank details.
-- `POST /wallet-withdraw`: min ₹100; requires bank details; creates `pending` withdrawal (manual payout processing).
+- Migration `018`: atomic `request_wallet_withdrawal` + `wallet_lifetime_paise` RPCs; drop authenticated `post-media` storage CRUD policies (signed URLs / service role only); revoke messaging/notifications/user_accounts PostgREST grants.
+- `GET /wallet`: lifetime balance from full paid-sales sum (not capped at 100); sales list still shows latest 100; masked bank details.
+- `POST /wallet-withdraw`: min ₹100; atomic RPC prevents double-spend races; creates `pending` withdrawal.
+- `POST /admin-wallet-withdraw`: ops path with `AUTH_ADMIN_SECRET` (`Authorization: Bearer …` or `x-admin-secret`) to mark pending withdrawals `paid`/`rejected`.
+- Media: authenticated JSON APIs return short-lived signed storage URLs after access checks (no cross-origin cookie required for `<img>`/`<video>`). `/secure-media` remains as a fallback redirect.
+- Consumer OTP (`/user-verify`, `/user-reset`, `/user-resend`): rate limits + attempt bumps (same model as creator verify).
+- `POST /razorpay-webhook`: HMAC (`RAZORPAY_WEBHOOK_SECRET`) → records captured purchases when the browser callback is lost.
+- Fan notifications: `/user-notifications` (same page as creator notifications). Inbox/report surfaces errors and redirects on 401.
+- Pending chat requests: initiator may send only the first message until accepted.
 - Payout APIs never return full account numbers (masked + last4 only).
-- OTP endpoints rate-limited per email/IP via `auth_rate_limits`.
 
 ## Auth / security hardening (015–016)
 

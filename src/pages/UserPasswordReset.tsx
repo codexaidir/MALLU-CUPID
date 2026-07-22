@@ -3,6 +3,7 @@ import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import { AlertCircle, Eye, EyeOff, Loader2, Lock, Mail } from "lucide-react";
 import { userForgot, userReset } from "../lib/auth";
 import { useAuth } from "../lib/useAuth";
+import { BrandIcon } from "../components/BrandMark";
 
 export default function UserPasswordReset() {
   const navigate = useNavigate();
@@ -39,7 +40,7 @@ export default function UserPasswordReset() {
   return (
     <div className="min-h-screen bg-gradient-to-b from-rose-50 to-white px-5 py-10 flex items-center justify-center">
       <div className="w-full max-w-sm bg-white rounded-3xl border border-rose-100 shadow-xl shadow-rose-100/50 p-7">
-        <div className="w-11 h-11 rounded-2xl bg-rose-500 text-white flex items-center justify-center font-bold mb-6">M</div>
+        <BrandIcon size="md" className="mb-6" />
         <h1 className="text-2xl font-bold text-zinc-900">{step === 1 ? "Reset password" : "Create new password"}</h1>
         <p className="text-sm text-zinc-500 mt-1 mb-7">{step === 1 ? "We'll send a 6-digit OTP to your email." : "Enter the OTP and your new password."}</p>
         {error && <div className="mb-5 bg-red-50 text-red-600 rounded-xl p-3 text-sm flex gap-2"><AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />{error}</div>}

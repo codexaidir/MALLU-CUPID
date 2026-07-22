@@ -1,5 +1,5 @@
-const CACHE = "mallucupid-shell-v1";
-const SHELL = ["/", "/manifest.webmanifest", "/mallucupid-icon.svg"];
+const CACHE = "mallucupid-shell-v2";
+const SHELL = ["/", "/manifest.webmanifest"];
 
 self.addEventListener("install", (event) => {
   event.waitUntil(caches.open(CACHE).then((cache) => cache.addAll(SHELL)));

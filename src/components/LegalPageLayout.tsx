@@ -1,6 +1,7 @@
 import React from "react";
 import { Link } from "react-router-dom";
-import { ArrowLeft, ShieldCheck } from "lucide-react";
+import { ArrowLeft } from "lucide-react";
+import { BrandLogo } from "./BrandMark";
 
 interface LegalPageLayoutProps {
   title: string;
@@ -22,9 +23,7 @@ export function LegalPageLayout({ title, intro, children }: LegalPageLayoutProps
 
         <div className="rounded-3xl border border-zinc-200 bg-white p-8 shadow-sm shadow-zinc-100 sm:p-10">
           <div className="mb-6 flex items-center gap-3">
-            <div className="rounded-2xl bg-rose-50 p-3 text-rose-500">
-              <ShieldCheck className="h-6 w-6" />
-            </div>
+            <BrandLogo size="sm" />
             <div>
               <p className="text-sm font-semibold uppercase tracking-[0.2em] text-rose-500">MalluCupid</p>
               <h1 className="text-3xl font-bold text-zinc-900">{title}</h1>

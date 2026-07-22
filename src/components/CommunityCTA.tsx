@@ -1,6 +1,7 @@
 import { motion } from "motion/react";
-import { Heart, ArrowRight, Sparkles } from "lucide-react";
+import { ArrowRight, Sparkles } from "lucide-react";
 import { Link } from "react-router-dom";
+import { BrandLogo } from "./BrandMark";
 
 export function CommunityCTA() {
   return (
@@ -24,16 +25,16 @@ export function CommunityCTA() {
                 <Sparkles className="h-4 w-4 text-rose-500" />
                 <span className="text-sm font-semibold text-rose-700">For Mallu creators</span>
               </div>
+              <BrandLogo size="lg" className="mb-6" />
               <h3 className="text-3xl md:text-4xl font-display font-bold text-zinc-900 mb-4 tracking-tight">
                 Sell exclusive content. Chat. Get paid.
               </h3>
               <p className="text-zinc-600 text-lg leading-relaxed max-w-sm mb-8">
                 Share free and paid posts, unlock with Razorpay, and withdraw earnings to your bank — all in one place.
               </p>
-              <div className="flex items-center gap-3 text-rose-600 font-semibold">
-                <Heart className="w-5 h-5 fill-rose-500" />
+              <p className="text-rose-600 font-semibold">
                 Built for creators and fans in Kerala and beyond
-              </div>
+              </p>
             </div>
           </motion.div>
 

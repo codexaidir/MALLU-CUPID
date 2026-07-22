@@ -145,6 +145,7 @@ export default function App() {
             <Route path="/report/:postId" element={<RequireAuth><ReportPostPage /></RequireAuth>} />
             <Route path="/payment-confirmation" element={<RequireAuth><PaymentConfirmationPage /></RequireAuth>} />
             <Route path="/user-inbox" element={<RequireAuth><InboxPage /></RequireAuth>} />
+            <Route path="/user-notifications" element={<RequireAuth><NotificationsPage /></RequireAuth>} />
             <Route path="/user-chat/:conversationId" element={<RequireAuth><ChatPage /></RequireAuth>} />
 
             {/* Legacy paths redirect to /<username>/... */}

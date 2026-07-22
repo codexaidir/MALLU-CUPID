@@ -10,6 +10,7 @@ import {
   type PublicProfileData, type PublicProfilePost,
 } from "../lib/auth";
 import { useAuth } from "../lib/useAuth";
+import { BRAND_APP_ICON_URL, BRAND_LOGO_URL } from "../lib/brand";
 import { loadRazorpay, type RazorpaySuccess } from "../lib/razorpay";
 
 interface InstallPromptEvent extends Event {
@@ -161,8 +162,8 @@ export default function PublicProfilePage() {
       background_color: "#ffffff",
       theme_color: "#f43f5e",
       icons: [
-        { src: `${location.origin}/mallucupid-icon.svg`, sizes: "192x192", type: "image/svg+xml", purpose: "any maskable" },
-        { src: `${location.origin}/mallucupid-icon.svg`, sizes: "512x512", type: "image/svg+xml", purpose: "any maskable" },
+        { src: BRAND_APP_ICON_URL, sizes: "192x192", type: "image/png", purpose: "any maskable" },
+        { src: BRAND_APP_ICON_URL, sizes: "512x512", type: "image/png", purpose: "any maskable" },
       ],
     };
     const blobUrl = URL.createObjectURL(
@@ -569,7 +570,7 @@ export default function PublicProfilePage() {
 
             <section className="bg-white px-5 pt-24 pb-12 border-t border-rose-100">
               <div className="rounded-3xl bg-gradient-to-br from-rose-500 to-pink-500 p-7 text-white shadow-xl shadow-rose-200/60">
-                <Heart className="w-8 h-8 fill-white mb-4" />
+                <img src={BRAND_LOGO_URL} alt="MalluCupid" className="h-10 w-auto object-contain mb-4 brightness-0 invert" draggable={false} />
                 <h2 className="text-2xl font-bold">Be a creator</h2>
                 <p className="text-sm leading-6 text-rose-50 mt-2">
                   Build your audience and sell exclusive photos and videos from your own page.

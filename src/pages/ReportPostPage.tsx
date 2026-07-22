@@ -27,6 +27,12 @@ export default function ReportPostPage() {
     (async () => {
       const response = await getPost(postId);
       if (cancelled) return;
+      if (response.error && /unauthorized|login/i.test(response.error)) {
+        const login = username ? "/login" : "/userlogin";
+        const redirect = username ? `${username}/post/${postId}/report` : `report/${postId}`;
+        navigate(`${login}?redirect=${encodeURIComponent(redirect)}`, { replace: true });
+        return;
+      }
       if (response.post) {
         if (response.post.is_owner) {
           // Owners can't report their own posts
@@ -42,7 +48,7 @@ export default function ReportPostPage() {
     return () => {
       cancelled = true;
     };
-  }, [postId, navigate, viewerPath]);
+  }, [postId, navigate, viewerPath, username]);
 
   const handleSubmit = async () => {
     if (!post || isSubmitting) return;
@@ -59,6 +65,13 @@ export default function ReportPostPage() {
 
     setIsSubmitting(true);
     const response = await reportPost(post.public_id, reason, details.trim());
+    if (response.error && /unauthorized|login/i.test(response.error)) {
+      const login = username ? "/login" : "/userlogin";
+      const redirect = username ? `${username}/post/${postId}/report` : `report/${postId}`;
+      navigate(`${login}?redirect=${encodeURIComponent(redirect)}`, { replace: true });
+      setIsSubmitting(false);
+      return;
+    }
     if (response.status === "report_submitted") {
       setIsSubmitted(true);
     } else {
@@ -90,7 +103,7 @@ export default function ReportPostPage() {
             <AlertCircle className="w-8 h-8 text-rose-500 mx-auto mb-3" />
             <p className="text-zinc-700 font-medium mb-4">{error}</p>
             <button
-              onClick={() => navigate(`/${username}`)}
+              onClick={() => navigate(username ? `/${username}` : "/")}
               className="px-6 py-2.5 bg-rose-500 hover:bg-rose-600 text-white rounded-full text-sm font-bold transition-colors"
             >
               Go to profile
@@ -110,7 +123,7 @@ export default function ReportPostPage() {
               Thank you for helping keep MalluCupid safe. Our team will review this post.
             </p>
             <button
-              onClick={() => navigate(`/${username}`)}
+              onClick={() => navigate(username ? `/${username}` : viewerPath)}
               className="px-6 py-2.5 bg-rose-500 hover:bg-rose-600 text-white rounded-full text-sm font-bold transition-colors"
             >
               Done

@@ -1,26 +1,21 @@
 import { motion } from "motion/react";
-import { Heart } from "lucide-react";
 import { Link } from "react-router-dom";
+import { BrandLogo } from "./BrandMark";
 
 export function Header() {
   return (
-    <motion.header 
+    <motion.header
       initial={{ opacity: 0, y: -20 }}
       animate={{ opacity: 1, y: 0 }}
       transition={{ duration: 0.6, ease: "easeOut" }}
       className="fixed top-0 left-0 right-0 z-50 flex items-center justify-between px-6 py-4 lg:px-12 backdrop-blur-md bg-white/80 border-b border-black/5"
     >
       <div className="flex items-center gap-2">
-        <Link to="/" className="flex items-center gap-2">
-          <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-gradient-to-br from-rose-500 to-pink-600 shadow-lg shadow-rose-500/20">
-            <Heart className="h-5 w-5 text-white fill-white" />
-          </div>
-          <span className="font-display text-xl font-bold tracking-tight text-zinc-900">
-            MalluCupid
-          </span>
+        <Link to="/" className="flex items-center gap-2" aria-label="MalluCupid home">
+          <BrandLogo size="md" />
         </Link>
       </div>
-      
+
       <nav className="hidden md:flex items-center gap-8">
         <a href="/#how-it-works" className="text-sm font-medium text-zinc-600 hover:text-zinc-900 transition-colors">How it Works</a>
         <Link to="/signup" className="text-sm font-medium text-zinc-600 hover:text-zinc-900 transition-colors">Become a creator</Link>
@@ -34,4 +29,3 @@ export function Header() {
     </motion.header>
   );
 }
-
