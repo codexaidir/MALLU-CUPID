@@ -251,6 +251,8 @@ export default function VerificationPage() {
     }
   };
 
+  const successPending = status?.status === "pending";
+
   return (
     <div className="min-h-screen bg-zinc-50 pt-14 pb-20 md:pt-0 md:pb-0 md:pl-20">
       <div className="hidden md:flex fixed left-0 top-0 bottom-0 w-20 bg-white border-r border-zinc-200 flex-col items-center py-6 z-40">
@@ -352,7 +354,7 @@ export default function VerificationPage() {
                   {success && (
                     <div className="flex items-center gap-2 text-sm text-emerald-700 bg-emerald-50 rounded-xl p-3">
                       <Check className="w-4 h-4 shrink-0" />{" "}
-                      {status?.status === "pending"
+                      {successPending
                         ? "Submitted. Your badge request is on preview — wait for admin approval."
                         : "Verification submitted. Your badge is now active."}
                     </div>

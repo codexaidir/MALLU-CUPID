@@ -28,12 +28,11 @@ export default function ExclusiveRoomFormPage() {
 
   useEffect(() => {
     (async () => {
-      if (!isEdit) {
-        const gate = await getCreatorVerification();
-        if (!gate.verification?.badge_active) {
-          navigate(`${base}/verification`, { replace: true });
-          return;
-        }
+      // Editing existing rooms also requires an active badge (backend-enforced).
+      const gate = await getCreatorVerification();
+      if (!gate.verification?.badge_active) {
+        navigate(`${base}/verification`, { replace: true });
+        return;
       }
       if (!isEdit || !roomId) {
         setLoading(false);

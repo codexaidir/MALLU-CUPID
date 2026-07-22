@@ -45,6 +45,10 @@ export default function DashboardPage() {
     navigate("/login", { replace: true });
   };
 
+  const badgeActive =
+    profile?.is_verified === true &&
+    (profile.verification_status == null || profile.verification_status === "verified");
+
   // The shareable link is the public creator page (/<username><serial>)
   const publicUrl = profile ? `${window.location.origin}/${publicProfileSlug(profile)}` : '';
 
@@ -198,7 +202,7 @@ export default function DashboardPage() {
                   <div className="flex flex-col flex-grow">
                     <div className="flex items-center gap-2 mb-4">
                       <h2 className="text-xl sm:text-2xl font-bold text-zinc-900">{profile?.username || ''}</h2>
-                      <VerifiedBadge verified={profile?.is_verified} />
+                      <VerifiedBadge verified={badgeActive} />
                     </div>
 
                     {/* Stats Desktop */}
@@ -228,15 +232,17 @@ export default function DashboardPage() {
                 </div>
 
                 {/* Action Buttons */}
-                {!profile?.is_verified && (
+                {!badgeActive && (
                   <div className="mb-4 w-full rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">
-                    Complete identity verification to publish posts and create Exclusive Rooms.{" "}
+                    {profile?.verification_status === 'pending'
+                      ? 'Your badge request is on preview. Posts and Exclusive Rooms stay locked for fans until admin approval.'
+                      : 'Complete identity verification to publish posts and create Exclusive Rooms.'}{' '}
                     <button
                       type="button"
                       onClick={() => navigate(`${base}/verification`)}
                       className="font-semibold text-rose-600 underline underline-offset-2"
                     >
-                      Verify now
+                      {profile?.verification_status === 'pending' ? 'View status' : 'Verify now'}
                     </button>
                   </div>
                 )}
@@ -257,7 +263,7 @@ export default function DashboardPage() {
                   <div className="relative hidden md:block">
                     <button
                       onClick={() => {
-                        if (!profile?.is_verified) {
+                        if (!badgeActive) {
                           navigate(`${base}/verification`);
                           return;
                         }
@@ -312,7 +318,7 @@ export default function DashboardPage() {
                   rooms={rooms}
                   canManage
                   onAddRoom={() => {
-                    if (!profile?.is_verified) {
+                    if (!badgeActive) {
                       navigate(`${base}/verification`);
                       return;
                     }

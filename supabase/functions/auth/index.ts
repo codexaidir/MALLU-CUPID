@@ -3345,6 +3345,9 @@ const handleTogglePostLike = async (req: Request) => {
   const body = await parseJson(req)
   const post = await fetchPostByPublicId(typeof body.public_id === 'string' ? body.public_id : '')
   if (!post) return jsonResponse({ error: 'Post not found' }, 404, {}, [], origin)
+  if (post.creator_id !== user.id && !(await creatorHasVerifiedBadge(post.creator_id))) {
+    return contentLockedResponse(origin)
+  }
 
   const hasAccess = post.creator_id === user.id || post.is_paid !== true || await hasPaidForPost(post.id, user.id)
   if (!hasAccess) return jsonResponse({ error: 'Unlock this post before liking it' }, 403, {}, [], origin)
@@ -3501,6 +3504,9 @@ const handlePostCheckout = async (req: Request) => {
   const body = await parseJson(req)
   const post = await fetchPostByPublicId(typeof body.public_id === 'string' ? body.public_id : '')
   if (!post) return jsonResponse({ error: 'Post not found' }, 404, {}, [], origin)
+  if (post.creator_id !== user.id && !(await creatorHasVerifiedBadge(post.creator_id))) {
+    return contentLockedResponse(origin)
+  }
   if (post.creator_id === user.id) return jsonResponse({ already_unlocked: true }, 200, {}, [], origin)
   if (post.is_paid !== true) return jsonResponse({ already_unlocked: true }, 200, {}, [], origin)
   if (await hasPaidForPost(post.id, user.id)) return jsonResponse({ already_unlocked: true }, 200, {}, [], origin)
@@ -5387,6 +5393,23 @@ const handleCreatorVerificationUploadUrls = async (req: Request) => {
   const limited = await enforceRateLimit(`verification-upload:${user.id}`, 20, 60 * 60 * 1000)
   if (!limited.ok) return jsonResponse({ error: limited.error }, 429, {}, [], origin)
 
+  // Block uploads when already verified or waiting on admin preview.
+  const profileGate = await fetch(
+    `${SUPABASE_URL}/rest/v1/profiles?id=eq.${user.id}&select=is_verified,verification_status&limit=1`,
+    { headers: { ...authHeaders(true) } },
+  )
+  const profileGateRows = profileGate.ok ? await profileGate.json().catch(() => []) : []
+  const profileGateRow = Array.isArray(profileGateRows) && profileGateRows.length ? profileGateRows[0] : null
+  if (profileGateRow?.is_verified === true && profileGateRow?.verification_status === 'verified') {
+    return jsonResponse({ error: 'You are already verified' }, 400, {}, [], origin)
+  }
+  if (profileGateRow?.verification_status === 'pending') {
+    return jsonResponse({
+      error: 'Your badge request is on preview. Please wait for admin approval.',
+      code: 'verification_pending',
+    }, 400, {}, [], origin)
+  }
+
   const body = await parseJson(req)
   const files = Array.isArray(body.files) ? body.files : []
   if (files.length !== 2) {
@@ -5464,10 +5487,10 @@ const handleSubmitCreatorVerification = async (req: Request) => {
   if (!termsAccepted) {
     return jsonResponse({ error: 'You must accept the Terms of Service and Privacy Policy' }, 400, {}, [], origin)
   }
-  if (!frontPath.startsWith(`${user.id}/`) || !backPath.startsWith(`${user.id}/`)) {
+  if (!frontPath.startsWith(`${user.id}/front.`) || !backPath.startsWith(`${user.id}/back.`)) {
     return jsonResponse({ error: 'Invalid ID document paths' }, 400, {}, [], origin)
   }
-  if (!/\/(front|back)\.[a-z0-9]+$/i.test(frontPath) || !/\/(front|back)\.[a-z0-9]+$/i.test(backPath)) {
+  if (!/^[^/]+\/front\.[a-z0-9]+$/i.test(frontPath) || !/^[^/]+\/back\.[a-z0-9]+$/i.test(backPath)) {
     return jsonResponse({ error: 'Invalid ID document paths' }, 400, {}, [], origin)
   }
 
