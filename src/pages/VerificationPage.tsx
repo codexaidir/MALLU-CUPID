@@ -147,8 +147,9 @@ export default function VerificationPage() {
   };
 
   const isVerified = status?.badge_active === true;
-  const isSuspended = status?.status === "suspended";
-  const canSubmit = !isVerified;
+  const isSuspended = status?.status === "suspended" || status?.status === "rejected";
+  const isPending = status?.status === "pending" || status?.needs_admin_approval === true;
+  const canSubmit = !isVerified && !isPending;
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -279,34 +280,57 @@ export default function VerificationPage() {
               className={`rounded-3xl border p-5 mb-4 ${
                 isVerified
                   ? "bg-sky-50 border-sky-100"
-                  : isSuspended
-                    ? "bg-amber-50 border-amber-100"
-                    : "bg-white border-zinc-100 shadow-sm"
+                  : isPending
+                    ? "bg-violet-50 border-violet-100"
+                    : isSuspended
+                      ? "bg-amber-50 border-amber-100"
+                      : "bg-white border-zinc-100 shadow-sm"
               }`}
             >
               <div className="flex items-start gap-3">
                 <div className={`w-10 h-10 rounded-full flex items-center justify-center shrink-0 ${
-                  isVerified ? "bg-sky-500 text-white" : isSuspended ? "bg-amber-500 text-white" : "bg-rose-50 text-rose-600"
+                  isVerified ? "bg-sky-500 text-white" : isPending ? "bg-violet-500 text-white" : isSuspended ? "bg-amber-500 text-white" : "bg-rose-50 text-rose-600"
                 }`}>
                   <BadgeCheck className="w-5 h-5" />
                 </div>
                 <div className="min-w-0">
                   <div className="flex items-center gap-2">
                     <h2 className="font-bold text-zinc-900">
-                      {isVerified ? "Verified creator" : isSuspended ? "Badge suspended" : "Get your verification badge"}
+                      {isVerified
+                        ? "Verified creator"
+                        : isPending
+                          ? "Badge request on preview"
+                          : isSuspended
+                            ? "Badge suspended"
+                            : "Get your verification badge"}
                     </h2>
                     <VerifiedBadge verified={isVerified} size="sm" />
                   </div>
                   <p className="text-sm text-zinc-600 mt-1 leading-6">
                     {isVerified
                       ? `Your profile shows a verified badge. ID: ${status?.public_id || "—"}`
-                      : isSuspended
-                        ? "An admin suspended your badge. Re-submit your government ID documents below to request verification again."
-                        : "Verification is required before you can publish posts or create Exclusive Rooms. Upload a government-approved ID (front and back)."}
+                      : isPending
+                        ? "Your badge request is on preview. Please wait for admin approval. Your posts and Exclusive Rooms stay locked for fans until an admin verifies you."
+                        : isSuspended
+                          ? `An admin suspended your badge. You can re-submit your ID. Auto-verify remaining after suspension: ${status?.auto_reverifies_remaining ?? 0} of 3. The 4th resubmit needs admin approval. Posts and Exclusive Rooms are locked for fans until you are verified again.`
+                          : "Verification is required before you can publish posts or create Exclusive Rooms. Submit once to get your badge immediately. Upload a government-approved ID (front and back)."}
                   </p>
                 </div>
               </div>
             </motion.div>
+
+            {isPending && (
+              <motion.div
+                initial={{ opacity: 0, y: 10 }}
+                animate={{ opacity: 1, y: 0 }}
+                className="bg-white rounded-3xl border border-violet-100 shadow-sm p-6 mb-4 text-center"
+              >
+                <p className="font-semibold text-zinc-900">Waiting for admin approval</p>
+                <p className="text-sm text-zinc-500 mt-2 leading-6">
+                  You used all 3 automatic re-verifications after suspension. An admin must manually approve this request before your badge returns.
+                </p>
+              </motion.div>
+            )}
 
             {canSubmit && (
               <motion.div
@@ -327,7 +351,10 @@ export default function VerificationPage() {
                   )}
                   {success && (
                     <div className="flex items-center gap-2 text-sm text-emerald-700 bg-emerald-50 rounded-xl p-3">
-                      <Check className="w-4 h-4 shrink-0" /> Verification submitted. Your badge is now active.
+                      <Check className="w-4 h-4 shrink-0" />{" "}
+                      {status?.status === "pending"
+                        ? "Submitted. Your badge request is on preview — wait for admin approval."
+                        : "Verification submitted. Your badge is now active."}
                     </div>
                   )}
 

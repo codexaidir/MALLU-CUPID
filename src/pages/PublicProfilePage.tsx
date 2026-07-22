@@ -492,6 +492,16 @@ export default function PublicProfilePage() {
 
             <section className="bg-[#effff7] min-h-[68vh] px-4 pb-20">
               <h2 className="text-xl font-semibold text-rose-500 pt-1 pb-4">Exclusive Content</h2>
+              {data?.content_locked ? (
+                <div className="py-16 px-4 text-center rounded-2xl bg-white border border-amber-100">
+                  <LockKeyhole className="w-10 h-10 text-amber-500 mx-auto" />
+                  <p className="mt-4 font-semibold text-zinc-900">Content locked</p>
+                  <p className="mt-2 text-sm text-zinc-500 leading-6">
+                    This creator’s posts and Exclusive Rooms are locked while their verification badge is inactive.
+                  </p>
+                </div>
+              ) : (
+              <>
               <div className="grid grid-cols-2 border-b border-emerald-100 mb-4">
                 <button
                   onClick={() => setTab("image")}
@@ -572,6 +582,8 @@ export default function PublicProfilePage() {
                 <div className="py-16 text-center text-sm text-zinc-400">
                   No {tab === "image" ? "photo" : "video"} posts yet.
                 </div>
+              )}
+              </>
               )}
             </section>
 

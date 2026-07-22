@@ -262,15 +262,19 @@ Instagram-highlights style rooms with a **monthly entry fee** (Razorpay). Paying
 - Fan / shared: `/exclusive/:roomId` (auth required); media `/view/exclusive/:postId`.
 - UI: `ExclusiveHighlightsRow` on dashboard + public profile (lock badge when locked); room page with owner Edit / Post / Delete controls on the fan route when the viewer is the creator; checkout → Razorpay → verify → gallery.
 
-## Creator verification badge (025)
+## Creator verification badge (025–026)
 
-- Migration `025`: `profiles.is_verified`, `verification_public_id`, `verification_status` (`unverified`/`verified`/`suspended`); table `creator_verifications` (12-char alphanumeric `public_id`, legal name, DOB, ID front/back paths, terms timestamp, status); private storage bucket `verification-docs`; RPCs `is_at_least_18`, `creator_has_verified_badge`.
-- Creator flow (`/<username>/verification`): legal full name, DOB (18+), ID front + back with upload %, terms checkbox, submit. Backend generates `public_id` and activates badge immediately.
-- Backend endpoints: `GET /creator-verification`, `POST /creator-verification/upload-urls`, `POST /creator-verification/submit`. Age, terms, and file presence are enforced server-side.
-- **Mandatory gate:** `POST /post-upload-urls`, `POST /posts`, `POST /exclusive-rooms`, `POST /exclusive-room-upload-urls`, and `POST /exclusive-room-posts` return `403` + `code: verification_required` unless the creator has an active verified badge (not suspended).
-- Badge UI: Instagram-style check on dashboard + public profile when `is_verified` from API.
-- Admin (`Verification` tab): list submissions, review signed ID images, **Suspend** or **Restore** badge (`GET /admin/verifications`, `GET /admin/verification`, `POST /admin/verifications/update`).
-- Payout bank details remain on Wallet (removed from Verification page focus).
+- Migration `025`: `profiles.is_verified`, `verification_public_id`, `verification_status`; table `creator_verifications`; private bucket `verification-docs`; RPC `creator_has_verified_badge`.
+- Migration `026`: statuses include `pending`/`rejected`; `auto_reverify_count` tracks post-suspension auto re-verifies.
+- **Rules (backend-enforced):**
+  1. First submit → **immediate verified badge** + 12-char alphanumeric `public_id`.
+  2. Admin may **suspend** / **restore** / **reject** after review; pending requests need **Approve**.
+  3. After suspend/reject: resubmits **1–3 auto-verify**; **4th+** → `pending` (“badge request on preview”) until admin approves. While pending, further submits are blocked.
+  4. While badge inactive (`suspended` / `pending` / `rejected` / unverified): **public posts and Exclusive Rooms are locked** (empty public feed, `content_locked`, post/room/checkout/media 403 for non-owners).
+  5. Creators cannot create/update posts or Exclusive Rooms without an active badge.
+- Creator UI: `/<username>/verification` (upload %, ID front/back, terms, pending waiting state).
+- Admin tab: list + review signed IDs; Approve / Suspend / Restore / Reject.
+- Endpoints: `GET/POST creator-verification*`, `GET/POST admin/verifications*`; rate limits on upload/submit.
 
 - Supabase project ref: `rytulzgsuzgicmpvrrxn`.
 - Apply migrations: `npx supabase db push` (linked project; password via CLI prompt or flag).

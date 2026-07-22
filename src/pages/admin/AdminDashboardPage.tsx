@@ -437,7 +437,7 @@ export default function AdminDashboardPage() {
           {tab === "verification" && (
             <div className="space-y-3">
               <p className="text-sm text-zinc-400 mb-2">
-                Review creator government ID submissions. Suspend badges that do not meet criteria; restore when resolved.
+                First submit auto-verifies. After suspend: 3 auto re-verifies, then pending needs Approve. Suspend locks public posts and Exclusive Rooms.
               </p>
               {verifications.map((v) => (
                 <div key={v.id} className="bg-zinc-900 border border-zinc-800 rounded-2xl p-4">
@@ -449,11 +449,24 @@ export default function AdminDashboardPage() {
                         <p className="text-sm text-zinc-300">{v.legal_full_name}</p>
                         <p className="text-xs text-zinc-500 mt-1">
                           DOB {v.date_of_birth} · ID {v.public_id} · {fmtDate(v.submitted_at)}
+                          {typeof v.auto_reverify_count === "number" ? ` · re-verifies ${v.auto_reverify_count}/3` : ""}
                         </p>
                         <span className={`inline-block mt-2 px-2.5 py-1 rounded-full text-xs font-bold ${
-                          v.badge_active ? "bg-sky-500/15 text-sky-300" : "bg-amber-500/15 text-amber-300"
+                          v.status === "pending"
+                            ? "bg-violet-500/15 text-violet-300"
+                            : v.badge_active
+                              ? "bg-sky-500/15 text-sky-300"
+                              : v.status === "rejected"
+                                ? "bg-red-500/15 text-red-300"
+                                : "bg-amber-500/15 text-amber-300"
                         }`}>
-                          {v.badge_active ? "Badge active" : "Suspended"}
+                          {v.status === "pending"
+                            ? "Needs approval"
+                            : v.badge_active
+                              ? "Badge active"
+                              : v.status === "rejected"
+                                ? "Rejected"
+                                : "Suspended"}
                         </span>
                       </div>
                     </div>
@@ -833,6 +846,24 @@ export default function AdminDashboardPage() {
             />
 
             <div className="flex flex-wrap gap-2">
+              {verificationView.status === "pending" && (
+                <button
+                  type="button"
+                  onClick={async () => {
+                    setBusy(true);
+                    const r = await adminUpdateVerification(verificationView.id, "approve", verificationNote);
+                    setBusy(false);
+                    if (r.error) setError(r.error);
+                    else {
+                      setVerificationView(null);
+                      loadTab("verification");
+                    }
+                  }}
+                  className="flex-1 px-4 py-2.5 rounded-xl bg-emerald-500 text-zinc-950 font-bold text-sm flex items-center justify-center gap-1"
+                >
+                  <CheckCircle2 className="w-4 h-4" /> Approve badge
+                </button>
+              )}
               {verificationView.badge_active ? (
                 <button
                   type="button"
@@ -850,12 +881,49 @@ export default function AdminDashboardPage() {
                 >
                   <XCircle className="w-4 h-4" /> Suspend badge
                 </button>
+              ) : verificationView.status !== "pending" ? (
+                <>
+                  <button
+                    type="button"
+                    onClick={async () => {
+                      setBusy(true);
+                      const r = await adminUpdateVerification(verificationView.id, "restore", verificationNote);
+                      setBusy(false);
+                      if (r.error) setError(r.error);
+                      else {
+                        setVerificationView(null);
+                        loadTab("verification");
+                      }
+                    }}
+                    className="flex-1 px-4 py-2.5 rounded-xl bg-emerald-500 text-zinc-950 font-bold text-sm flex items-center justify-center gap-1"
+                  >
+                    <CheckCircle2 className="w-4 h-4" /> Restore badge
+                  </button>
+                  {verificationView.status !== "rejected" && (
+                    <button
+                      type="button"
+                      onClick={async () => {
+                        setBusy(true);
+                        const r = await adminUpdateVerification(verificationView.id, "reject", verificationNote);
+                        setBusy(false);
+                        if (r.error) setError(r.error);
+                        else {
+                          setVerificationView(null);
+                          loadTab("verification");
+                        }
+                      }}
+                      className="px-4 py-2.5 rounded-xl bg-zinc-800 text-zinc-300 font-bold text-sm"
+                    >
+                      Reject
+                    </button>
+                  )}
+                </>
               ) : (
                 <button
                   type="button"
                   onClick={async () => {
                     setBusy(true);
-                    const r = await adminUpdateVerification(verificationView.id, "restore", verificationNote);
+                    const r = await adminUpdateVerification(verificationView.id, "reject", verificationNote);
                     setBusy(false);
                     if (r.error) setError(r.error);
                     else {
@@ -863,9 +931,9 @@ export default function AdminDashboardPage() {
                       loadTab("verification");
                     }
                   }}
-                  className="flex-1 px-4 py-2.5 rounded-xl bg-emerald-500 text-zinc-950 font-bold text-sm flex items-center justify-center gap-1"
+                  className="px-4 py-2.5 rounded-xl bg-red-500/15 text-red-300 font-bold text-sm flex items-center justify-center gap-1"
                 >
-                  <CheckCircle2 className="w-4 h-4" /> Restore badge
+                  <XCircle className="w-4 h-4" /> Reject
                 </button>
               )}
             </div>

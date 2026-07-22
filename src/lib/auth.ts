@@ -107,7 +107,7 @@ export interface Profile {
   public_serial: number;
   is_verified?: boolean;
   verification_public_id?: string | null;
-  verification_status?: 'unverified' | 'verified' | 'suspended';
+  verification_status?: 'unverified' | 'pending' | 'verified' | 'suspended' | 'rejected';
 }
 
 /** Public creator page slug for a profile: <username><5-digit serial>. */
@@ -151,7 +151,7 @@ export async function getPayoutAccount(): Promise<{ account?: PayoutAccount | nu
 }
 
 export type CreatorVerificationStatus = {
-  status: 'unverified' | 'verified' | 'suspended';
+  status: 'unverified' | 'pending' | 'verified' | 'suspended' | 'rejected';
   badge_active: boolean;
   public_id: string | null;
   legal_full_name?: string | null;
@@ -159,6 +159,10 @@ export type CreatorVerificationStatus = {
   submitted_at?: string | null;
   reviewed_at?: string | null;
   admin_note?: string | null;
+  auto_reverify_count?: number;
+  auto_reverifies_remaining?: number;
+  needs_admin_approval?: boolean;
+  content_locked?: boolean;
 };
 
 export async function getCreatorVerification(): Promise<{
@@ -480,6 +484,7 @@ export interface PublicProfileData {
   };
   posts: PublicProfilePost[];
   rooms?: ExclusiveRoom[];
+  content_locked?: boolean;
 }
 
 /** Guest endpoint: no auth required. Slug is <username><5-digit serial>. */

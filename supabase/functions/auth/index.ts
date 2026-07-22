@@ -1268,6 +1268,8 @@ const generatePostPublicId = () => {
 const VERIFICATION_DOCS_BUCKET = 'verification-docs'
 const VERIFICATION_ID_TYPES = ['image/jpeg', 'image/jpg', 'image/png', 'image/webp']
 const MAX_VERIFICATION_ID_SIZE = 10 * 1024 * 1024
+/** After suspension, this many resubmits auto-verify; the next requires admin approval. */
+const MAX_AUTO_REVERIFIES = 3
 
 const creatorHasVerifiedBadge = async (userId: string): Promise<boolean> => {
   const res = await fetch(`${SUPABASE_URL}/rest/v1/rpc/creator_has_verified_badge`, {
@@ -1276,14 +1278,13 @@ const creatorHasVerifiedBadge = async (userId: string): Promise<boolean> => {
     body: JSON.stringify({ p_user_id: userId }),
   })
   if (!res.ok) {
-    // Fallback to profiles columns if RPC is unavailable
     const p = await fetch(
       `${SUPABASE_URL}/rest/v1/profiles?id=eq.${userId}&select=is_verified,verification_status&limit=1`,
       { headers: { ...authHeaders(true) } },
     )
     const rows = p.ok ? await p.json().catch(() => []) : []
     const row = Array.isArray(rows) && rows.length ? rows[0] : null
-    return Boolean(row?.is_verified && row?.verification_status === 'verified')
+    return Boolean(row?.is_verified === true && row?.verification_status === 'verified')
   }
   const value = await res.json().catch(() => false)
   return value === true
@@ -1301,7 +1302,30 @@ const verificationRequiredResponse = (origin: string | null) =>
     origin,
   )
 
-const isAtLeast18 = (dobIso: string): boolean => {
+const contentLockedResponse = (origin: string | null) =>
+  jsonResponse(
+    {
+      error: 'This creator’s content is locked while their verification badge is inactive',
+      code: 'content_locked',
+    },
+    403,
+    {},
+    [],
+    origin,
+  )
+
+const assertDobAtLeast18 = async (dobIso: string): Promise<boolean> => {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(dobIso)) return false
+  const res = await fetch(`${SUPABASE_URL}/rest/v1/rpc/is_at_least_18`, {
+    method: 'POST',
+    headers: { ...authHeaders(true) },
+    body: JSON.stringify({ p_dob: dobIso }),
+  })
+  if (res.ok) {
+    const value = await res.json().catch(() => false)
+    return value === true
+  }
+  // Fallback if RPC unavailable
   const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(dobIso)
   if (!m) return false
   const dob = new Date(Date.UTC(Number(m[1]), Number(m[2]) - 1, Number(m[3])))
@@ -1312,17 +1336,28 @@ const isAtLeast18 = (dobIso: string): boolean => {
 }
 
 const mapVerificationStatus = (row: Record<string, unknown> | null, profile?: Record<string, unknown> | null) => {
-  const status = String(row?.status || profile?.verification_status || 'unverified')
-  const badgeActive = status === 'verified' && (profile?.is_verified === true || row?.status === 'verified')
+  const rowStatus = String(row?.status || '')
+  const profileStatus = String(profile?.verification_status || 'unverified')
+  const status = (['pending', 'verified', 'suspended', 'rejected'].includes(rowStatus)
+    ? rowStatus
+    : ['pending', 'verified', 'suspended', 'rejected'].includes(profileStatus)
+      ? profileStatus
+      : 'unverified') as string
+  const badgeActive = profile?.is_verified === true && profileStatus === 'verified'
+  const autoCount = Number(row?.auto_reverify_count || 0) || 0
   return {
-    status: status === 'verified' || status === 'suspended' ? status : 'unverified',
-    badge_active: badgeActive && status === 'verified',
+    status,
+    badge_active: badgeActive,
     public_id: (row?.public_id as string) || (profile?.verification_public_id as string) || null,
     legal_full_name: (row?.legal_full_name as string) || null,
     date_of_birth: (row?.date_of_birth as string) || null,
     submitted_at: (row?.submitted_at as string) || null,
     reviewed_at: (row?.reviewed_at as string) || null,
     admin_note: (row?.admin_note as string) || null,
+    auto_reverify_count: autoCount,
+    auto_reverifies_remaining: Math.max(0, MAX_AUTO_REVERIFIES - autoCount),
+    needs_admin_approval: status === 'pending',
+    content_locked: !badgeActive && (status === 'suspended' || status === 'pending' || status === 'rejected'),
   }
 }
 
@@ -1450,32 +1485,40 @@ const handlePublicProfile = async (req: Request, url: URL) => {
 
   const postRows = postsRes.ok ? await postsRes.json().catch(() => []) : []
   const posts = Array.isArray(postRows) ? postRows : []
+  const creatorUnlocked = profile.is_verified === true && profile.verification_status === 'verified'
+  // Owner may always see their own public page content; everyone else sees locked empty feed.
+  const viewerIsOwner = Boolean(viewer?.id && viewer.id === profile.id)
+  const contentLocked = !creatorUnlocked && !viewerIsOwner
 
   // Authenticated viewers get short-lived signed previews for free posts only.
   // Paid tiles stay locked on this endpoint (unlock via /post after purchase).
   const previewPaths: string[] = []
-  for (const p of posts) {
-    if (viewer?.id && p.is_paid !== true) {
-      const paths = Array.isArray(p.media_paths) ? p.media_paths as string[] : []
-      if (paths[0]) previewPaths.push(paths[0])
+  if (!contentLocked) {
+    for (const p of posts) {
+      if (viewer?.id && p.is_paid !== true) {
+        const paths = Array.isArray(p.media_paths) ? p.media_paths as string[] : []
+        if (paths[0]) previewPaths.push(paths[0])
+      }
     }
   }
   const signedPreviews = await signMediaPaths(previewPaths)
-  const publicPosts = posts.map((p) => {
-    const paths = Array.isArray(p.media_paths) ? p.media_paths as string[] : []
-    const canPreview = Boolean(viewer?.id) && p.is_paid !== true
-    const preview = canPreview && paths[0] ? (signedPreviews[paths[0]] || '') : ''
-    return {
-      public_id: p.public_id,
-      media_type: p.media_type,
-      is_paid: p.is_paid === true,
-      price: p.is_paid === true ? p.price : 0,
-      media_url: preview,
-      media_count: paths.length,
-      like_count: Number(p.like_count) || 0,
-      view_count: Number(p.view_count) || 0,
-    }
-  })
+  const publicPosts = contentLocked
+    ? []
+    : posts.map((p) => {
+      const paths = Array.isArray(p.media_paths) ? p.media_paths as string[] : []
+      const canPreview = Boolean(viewer?.id) && p.is_paid !== true
+      const preview = canPreview && paths[0] ? (signedPreviews[paths[0]] || '') : ''
+      return {
+        public_id: p.public_id,
+        media_type: p.media_type,
+        is_paid: p.is_paid === true,
+        price: p.is_paid === true ? p.price : 0,
+        media_url: preview,
+        media_count: paths.length,
+        like_count: Number(p.like_count) || 0,
+        view_count: Number(p.view_count) || 0,
+      }
+    })
 
   let isFollowing = false
   if (viewer?.id) {
@@ -1494,10 +1537,10 @@ const handlePublicProfile = async (req: Request, url: URL) => {
       avatar_url: profile.avatar_url || '',
       bio: profile.bio || '',
       serial: String(profile.public_serial).padStart(5, '0'),
-      is_verified: profile.is_verified === true && profile.verification_status === 'verified',
+      is_verified: creatorUnlocked,
     },
     stats: {
-      posts: postCountRes.ok ? countFrom(postCountRes) : posts.length,
+      posts: contentLocked ? 0 : (postCountRes.ok ? countFrom(postCountRes) : posts.length),
       followers: followersRes.ok ? countFrom(followersRes) : 0,
     },
     viewer: {
@@ -1506,7 +1549,8 @@ const handlePublicProfile = async (req: Request, url: URL) => {
       is_following: isFollowing,
     },
     posts: publicPosts,
-    rooms: await listCreatorExclusiveRooms(profile.id, viewer?.id),
+    rooms: contentLocked ? [] : await listCreatorExclusiveRooms(profile.id, viewer?.id),
+    content_locked: contentLocked,
   }, 200, {}, [], origin)
 }
 
@@ -3190,6 +3234,9 @@ const handleSecureMedia = async (req: Request, url: URL) => {
   if (postPublicId) {
     const post = await fetchPostByPublicId(postPublicId)
     if (!post) return jsonResponse({ error: 'Not found' }, 404, {}, [], origin)
+    if (post.creator_id !== user.id && !(await creatorHasVerifiedBadge(post.creator_id))) {
+      return contentLockedResponse(origin)
+    }
     const hasAccess = post.creator_id === user.id || post.is_paid !== true || await hasPaidForPost(post.id, user.id)
     if (!hasAccess) return jsonResponse({ error: 'Forbidden' }, 403, {}, [], origin)
     const paths = Array.isArray(post.media_paths) ? post.media_paths as string[] : []
@@ -3238,6 +3285,9 @@ const handleGetPost = async (req: Request, url: URL) => {
   if (!post) return jsonResponse({ error: 'Post not found' }, 404, {}, [], origin)
 
   const isOwner = post.creator_id === user.id
+  if (!isOwner && !(await creatorHasVerifiedBadge(post.creator_id))) {
+    return contentLockedResponse(origin)
+  }
   // Access is decided server-side only: owner, free post, or a recorded paid purchase.
   const hasAccess = isOwner || post.is_paid !== true || (await hasPaidForPost(post.id, user.id))
 
@@ -3334,6 +3384,7 @@ const handleUpdatePost = async (req: Request) => {
   const origin = req.headers.get('origin')
   const user = await requireUser(req)
   if (!user) return jsonResponse({ error: 'Unauthorized' }, 401, {}, [], origin)
+  if (!(await creatorHasVerifiedBadge(user.id))) return verificationRequiredResponse(origin)
 
   const body = await parseJson(req)
   const post = await fetchPostByPublicId(typeof body.public_id === 'string' ? body.public_id : '')
@@ -4577,6 +4628,10 @@ const publicExclusiveRoom = async (
 }
 
 const listCreatorExclusiveRooms = async (creatorId: string, viewerId?: string) => {
+  // Public viewers cannot see exclusive rooms while the creator badge is inactive.
+  if (viewerId !== creatorId && !(await creatorHasVerifiedBadge(creatorId))) {
+    return []
+  }
   const res = await fetch(
     `${SUPABASE_URL}/rest/v1/exclusive_rooms?creator_id=eq.${creatorId}&select=*&order=sort_order.asc`,
     { headers: { ...authHeaders(true) } },
@@ -4752,6 +4807,7 @@ const handleUpdateExclusiveRoom = async (req: Request) => {
   const origin = req.headers.get('origin')
   const user = await requireRole(req, 'creator')
   if (!user) return jsonResponse({ error: 'Unauthorized' }, 401, {}, [], origin)
+  if (!(await creatorHasVerifiedBadge(user.id))) return verificationRequiredResponse(origin)
   const body = await parseJson(req)
   const roomId = typeof body.room_id === 'string' ? body.room_id.trim() : ''
   const room = await fetchExclusiveRoomById(roomId)
@@ -4788,6 +4844,7 @@ const handleExclusiveThumbnailUpload = async (req: Request) => {
   const origin = req.headers.get('origin')
   const user = await requireRole(req, 'creator')
   if (!user) return jsonResponse({ error: 'Unauthorized' }, 401, {}, [], origin)
+  if (!(await creatorHasVerifiedBadge(user.id))) return verificationRequiredResponse(origin)
   const body = await parseJson(req)
   const roomId = typeof body.room_id === 'string' ? body.room_id.trim() : ''
   const room = await fetchExclusiveRoomById(roomId)
@@ -4817,6 +4874,7 @@ const handleExclusiveThumbnailConfirm = async (req: Request) => {
   const origin = req.headers.get('origin')
   const user = await requireRole(req, 'creator')
   if (!user) return jsonResponse({ error: 'Unauthorized' }, 401, {}, [], origin)
+  if (!(await creatorHasVerifiedBadge(user.id))) return verificationRequiredResponse(origin)
   const body = await parseJson(req)
   const roomId = typeof body.room_id === 'string' ? body.room_id.trim() : ''
   const path = typeof body.path === 'string' ? body.path.trim() : ''
@@ -4847,6 +4905,9 @@ const handleGetExclusiveRoom = async (req: Request, url: URL) => {
   if (!room) return jsonResponse({ error: 'Room not found' }, 404, {}, [], origin)
 
   const isOwner = Boolean(user?.id && room.creator_id === user.id)
+  if (!isOwner && !(await creatorHasVerifiedBadge(room.creator_id))) {
+    return contentLockedResponse(origin)
+  }
   const hasAccess = user?.id ? (isOwner || await hasExclusiveAccess(roomId, user.id)) : false
   const slug = await creatorSlugFor(room.creator_id)
 
@@ -5031,9 +5092,13 @@ const handleGetExclusiveRoomPost = async (req: Request, url: URL) => {
   const rows = res.ok ? await res.json().catch(() => []) : []
   const post = Array.isArray(rows) && rows.length ? rows[0] : null
   if (!post) return jsonResponse({ error: 'Post not found' }, 404, {}, [], origin)
-  const access = await hasExclusiveAccess(post.room_id, user.id)
-  if (!access) return jsonResponse({ error: 'Exclusive access required' }, 403, {}, [], origin)
   const room = await fetchExclusiveRoomById(post.room_id)
+  if (!room) return jsonResponse({ error: 'Room not found' }, 404, {}, [], origin)
+  if (room.creator_id !== user.id && !(await creatorHasVerifiedBadge(room.creator_id))) {
+    return contentLockedResponse(origin)
+  }
+  const access = await hasExclusiveAccess(post.room_id, user.id)
+  if (!access && room.creator_id !== user.id) return jsonResponse({ error: 'Exclusive access required' }, 403, {}, [], origin)
   const decorated = (await decorateExclusivePosts([post], true))[0]
   return jsonResponse({
     post: { ...decorated, room_name: room?.name || 'Exclusive' },
@@ -5048,6 +5113,7 @@ const handleExclusiveRoomCheckout = async (req: Request) => {
   const roomId = typeof body.room_id === 'string' ? body.room_id.trim() : ''
   const room = await fetchExclusiveRoomById(roomId)
   if (!room) return jsonResponse({ error: 'Room not found' }, 404, {}, [], origin)
+  if (!(await creatorHasVerifiedBadge(room.creator_id))) return contentLockedResponse(origin)
   if (room.creator_id === user.id) return jsonResponse({ already_unlocked: true }, 200, {}, [], origin)
   if (await hasExclusiveAccess(roomId, user.id)) return jsonResponse({ already_unlocked: true }, 200, {}, [], origin)
   if (!RAZORPAY_KEY_ID || !RAZORPAY_KEY_SECRET) {
@@ -5318,6 +5384,9 @@ const handleCreatorVerificationUploadUrls = async (req: Request) => {
   const user = await requireRole(req, 'creator')
   if (!user) return jsonResponse({ error: 'Unauthorized' }, 401, {}, [], origin)
 
+  const limited = await enforceRateLimit(`verification-upload:${user.id}`, 20, 60 * 60 * 1000)
+  if (!limited.ok) return jsonResponse({ error: limited.error }, 429, {}, [], origin)
+
   const body = await parseJson(req)
   const files = Array.isArray(body.files) ? body.files : []
   if (files.length !== 2) {
@@ -5376,6 +5445,9 @@ const handleSubmitCreatorVerification = async (req: Request) => {
   const user = await requireRole(req, 'creator')
   if (!user) return jsonResponse({ error: 'Unauthorized' }, 401, {}, [], origin)
 
+  const limited = await enforceRateLimit(`verification-submit:${user.id}`, 8, 60 * 60 * 1000)
+  if (!limited.ok) return jsonResponse({ error: limited.error }, 429, {}, [], origin)
+
   const body = await parseJson(req)
   const legalName = typeof body.legal_full_name === 'string' ? body.legal_full_name.trim() : ''
   const dob = typeof body.date_of_birth === 'string' ? body.date_of_birth.trim() : ''
@@ -5386,7 +5458,7 @@ const handleSubmitCreatorVerification = async (req: Request) => {
   if (legalName.length < 2 || legalName.length > 120) {
     return jsonResponse({ error: 'Enter your full legal name as on your government ID' }, 400, {}, [], origin)
   }
-  if (!isAtLeast18(dob)) {
+  if (!(await assertDobAtLeast18(dob))) {
     return jsonResponse({ error: 'You must be at least 18 years old to get a verification badge' }, 400, {}, [], origin)
   }
   if (!termsAccepted) {
@@ -5395,15 +5467,36 @@ const handleSubmitCreatorVerification = async (req: Request) => {
   if (!frontPath.startsWith(`${user.id}/`) || !backPath.startsWith(`${user.id}/`)) {
     return jsonResponse({ error: 'Invalid ID document paths' }, 400, {}, [], origin)
   }
+  if (!/\/(front|back)\.[a-z0-9]+$/i.test(frontPath) || !/\/(front|back)\.[a-z0-9]+$/i.test(backPath)) {
+    return jsonResponse({ error: 'Invalid ID document paths' }, 400, {}, [], origin)
+  }
 
-  const existingProfile = await fetch(
-    `${SUPABASE_URL}/rest/v1/profiles?id=eq.${user.id}&select=is_verified,verification_status&limit=1`,
-    { headers: { ...authHeaders(true) } },
-  )
-  const existingRows = existingProfile.ok ? await existingProfile.json().catch(() => []) : []
+  const [existingProfileRes, existingVerRes] = await Promise.all([
+    fetch(
+      `${SUPABASE_URL}/rest/v1/profiles?id=eq.${user.id}&select=is_verified,verification_status,verification_public_id&limit=1`,
+      { headers: { ...authHeaders(true) } },
+    ),
+    fetch(
+      `${SUPABASE_URL}/rest/v1/creator_verifications?user_id=eq.${user.id}&select=*&limit=1`,
+      { headers: { ...authHeaders(true) } },
+    ),
+  ])
+  const existingRows = existingProfileRes.ok ? await existingProfileRes.json().catch(() => []) : []
   const existing = Array.isArray(existingRows) && existingRows.length ? existingRows[0] : null
   if (existing?.is_verified === true && existing?.verification_status === 'verified') {
     return jsonResponse({ error: 'You are already verified' }, 400, {}, [], origin)
+  }
+
+  const existingVerRows = existingVerRes.ok ? await existingVerRes.json().catch(() => []) : []
+  const prior = Array.isArray(existingVerRows) && existingVerRows.length ? existingVerRows[0] : null
+  const priorStatus = String(prior?.status || '')
+
+  // While waiting for admin on the 4th+ resubmit, do not allow another submit.
+  if (priorStatus === 'pending') {
+    return jsonResponse({
+      error: 'Your badge request is on preview. Please wait for admin approval.',
+      code: 'verification_pending',
+    }, 400, {}, [], origin)
   }
 
   // Confirm both files exist in storage
@@ -5421,16 +5514,28 @@ const handleSubmitCreatorVerification = async (req: Request) => {
     return jsonResponse({ error: 'ID front and back must be uploaded before submit' }, 400, {}, [], origin)
   }
 
-  const existingVer = await fetch(
-    `${SUPABASE_URL}/rest/v1/creator_verifications?user_id=eq.${user.id}&select=id,public_id&limit=1`,
-    { headers: { ...authHeaders(true) } },
-  )
-  const existingVerRows = existingVer.ok ? await existingVer.json().catch(() => []) : []
-  const prior = Array.isArray(existingVerRows) && existingVerRows.length ? existingVerRows[0] : null
-  const publicId = prior?.public_id && /^[A-Za-z0-9]{12}$/.test(prior.public_id)
-    ? prior.public_id
+  const publicId = prior?.public_id && /^[A-Za-z0-9]{12}$/.test(String(prior.public_id))
+    ? String(prior.public_id)
     : generatePostPublicId()
   const now = new Date().toISOString()
+  let autoCount = Number(prior?.auto_reverify_count || 0) || 0
+  let nextStatus: 'verified' | 'pending' = 'verified'
+
+  // First-time submit → immediate badge.
+  // After suspend/reject: first 3 resubmits auto-verify; 4th+ stays pending for admin.
+  const isResubmitAfterPenalty = priorStatus === 'suspended' || priorStatus === 'rejected'
+  if (isResubmitAfterPenalty) {
+    autoCount += 1
+    nextStatus = autoCount <= MAX_AUTO_REVERIFIES ? 'verified' : 'pending'
+  } else if (!prior) {
+    nextStatus = 'verified'
+    autoCount = 0
+  } else {
+    // Unverified edge / unknown prior without penalty → treat as first grant
+    nextStatus = 'verified'
+  }
+
+  const badgeActive = nextStatus === 'verified'
   const payload = {
     user_id: user.id,
     public_id: publicId,
@@ -5439,8 +5544,9 @@ const handleSubmitCreatorVerification = async (req: Request) => {
     id_front_path: frontPath,
     id_back_path: backPath,
     terms_accepted_at: now,
-    status: 'verified',
-    admin_note: '',
+    status: nextStatus,
+    auto_reverify_count: autoCount,
+    admin_note: nextStatus === 'pending' ? 'Awaiting admin approval (4th+ resubmit after suspension)' : '',
     reviewed_at: null,
     reviewed_by: null,
     submitted_at: now,
@@ -5484,22 +5590,22 @@ const handleSubmitCreatorVerification = async (req: Request) => {
       method: 'PATCH',
       headers: { ...authHeaders(true) },
       body: JSON.stringify({
-        is_verified: true,
+        is_verified: badgeActive,
         verification_public_id: publicId,
-        verification_status: 'verified',
+        verification_status: nextStatus,
         updated_at: now,
       }),
     },
   )
   if (!profileUpd.ok) {
     console.error('Profile verification flag failed:', await profileUpd.text().catch(() => ''))
-    return jsonResponse({ error: 'Failed to activate verification badge' }, 500, {}, [], origin)
+    return jsonResponse({ error: 'Failed to update verification status' }, 500, {}, [], origin)
   }
 
   return jsonResponse({
     verification: mapVerificationStatus(saved, {
-      is_verified: true,
-      verification_status: 'verified',
+      is_verified: badgeActive,
+      verification_status: nextStatus,
       verification_public_id: publicId,
     }),
   }, 200, {}, [], origin)
@@ -5522,6 +5628,7 @@ const decorateAdminVerification = async (row: Record<string, unknown>, withDocs 
   const profile = Array.isArray(profiles) && profiles.length ? profiles[0] : {}
   const account = Array.isArray(accounts) && accounts.length ? accounts[0] : {}
   const status = String(row.status || 'verified')
+  const autoCount = Number(row.auto_reverify_count || 0) || 0
   const base = {
     id: row.id,
     user_id: userId,
@@ -5529,13 +5636,16 @@ const decorateAdminVerification = async (row: Record<string, unknown>, withDocs 
     legal_full_name: row.legal_full_name,
     date_of_birth: row.date_of_birth,
     status,
-    badge_active: status === 'verified' && profile.is_verified === true,
+    badge_active: status === 'verified' && profile.is_verified === true && profile.verification_status === 'verified',
     username: profile.username || '',
     email: account.email || '',
     avatar_url: profile.avatar_url || '',
     submitted_at: row.submitted_at,
     reviewed_at: row.reviewed_at || null,
     admin_note: row.admin_note || '',
+    auto_reverify_count: autoCount,
+    auto_reverifies_remaining: Math.max(0, MAX_AUTO_REVERIFIES - autoCount),
+    needs_admin_approval: status === 'pending',
   }
   if (!withDocs) return base
   const signed = await signVerificationPaths(
@@ -5590,7 +5700,7 @@ const handleAdminUpdateVerification = async (req: Request) => {
 
   const body = await parseJson(req)
   const id = typeof body.id === 'string' ? body.id.trim() : ''
-  const action = body.action === 'restore' ? 'restore' : body.action === 'suspend' ? 'suspend' : ''
+  const action = ['approve', 'suspend', 'restore', 'reject'].includes(body.action) ? body.action : ''
   const note = typeof body.note === 'string' ? body.note.trim().slice(0, 500) : ''
   if (!id || !action) return jsonResponse({ error: 'id and action are required' }, 400, {}, [], origin)
 
@@ -5603,8 +5713,11 @@ const handleAdminUpdateVerification = async (req: Request) => {
   if (!row) return jsonResponse({ error: 'Not found' }, 404, {}, [], origin)
 
   const now = new Date().toISOString()
-  const nextStatus = action === 'suspend' ? 'suspended' : 'verified'
-  const badgeActive = action === 'restore'
+  let nextStatus = String(row.status)
+  if (action === 'approve' || action === 'restore') nextStatus = 'verified'
+  else if (action === 'suspend') nextStatus = 'suspended'
+  else if (action === 'reject') nextStatus = 'rejected'
+  const badgeActive = nextStatus === 'verified'
 
   const upd = await fetch(
     `${SUPABASE_URL}/rest/v1/creator_verifications?id=eq.${id}`,

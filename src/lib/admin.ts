@@ -251,7 +251,7 @@ export interface AdminVerificationRow {
   public_id: string;
   legal_full_name: string;
   date_of_birth: string;
-  status: "verified" | "suspended";
+  status: "pending" | "verified" | "suspended" | "rejected";
   badge_active: boolean;
   username: string;
   email: string;
@@ -259,6 +259,9 @@ export interface AdminVerificationRow {
   submitted_at: string;
   reviewed_at: string | null;
   admin_note: string;
+  auto_reverify_count?: number;
+  auto_reverifies_remaining?: number;
+  needs_admin_approval?: boolean;
   id_front_url?: string;
   id_back_url?: string;
 }
@@ -279,7 +282,7 @@ export async function getAdminVerificationDetail(id: string): Promise<{
 
 export async function adminUpdateVerification(
   id: string,
-  action: "suspend" | "restore",
+  action: "approve" | "suspend" | "restore" | "reject",
   note = "",
 ): Promise<{ verification?: AdminVerificationRow; error?: string }> {
   return apiPost("/admin/verifications/update", { id, action, note });
