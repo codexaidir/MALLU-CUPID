@@ -212,4 +212,12 @@ The application uses URL-based pagination (React Router) with the following rout
 - `welcome` edge function returns 410. Verification: live payout API; KYC not enabled.
 - Consumer report: `/report/:postId`. Creator OTP verify refreshes session.
 
+## Admin console
+
+- Migration `020`: `user_accounts.role` includes `admin`.
+- Login: `https://www.mallucupid.com/adminlogin` (email + password only; no signup/reset).
+- Dashboard: `https://www.mallucupid.com/admin<admin-user-uuid>` (cookie session, role `admin`).
+- Endpoints (admin cookie session): `POST /admin-login`; `GET /admin/stats`, `/admin/users`, `/admin/posts`, `/admin/support-tickets`, `/admin/reports/posts`, `/admin/reports/users`, `/admin/withdrawals`; `POST /admin/posts/delete`, `/admin/support-tickets/update`, `/admin-wallet-withdraw`.
+- Bootstrap admin: `node scripts/create-admin-user.mjs` (requires `SUPABASE_SERVICE_ROLE_KEY`).
+
 

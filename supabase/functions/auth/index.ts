@@ -435,7 +435,7 @@ const fetchUser = async (accessToken: string) => {
   return res.json()
 }
 
-type AccountRole = 'creator' | 'user'
+type AccountRole = 'creator' | 'user' | 'admin'
 
 const getAccount = async (userId: string) => {
   const res = await fetch(
@@ -463,6 +463,13 @@ const userWithRole = async (user: Record<string, unknown>) => {
   }
 }
 
+const requireAdmin = async (req: Request) => {
+  const user = await requireUser(req)
+  if (!user) return null
+  const account = await getAccount(user.id)
+  return account?.role === 'admin' ? user : null
+}
+
 const requireRole = async (req: Request, role: AccountRole) => {
   const user = await requireUser(req)
   if (!user) return null
@@ -480,6 +487,12 @@ const handleLogin = async (req: Request) => {
   if (!data.access_token || !data.refresh_token) return jsonResponse({ error: 'Login did not return tokens' }, 500, {}, [], origin)
 
   const account = await getAccount(data.user?.id)
+  if (account?.role === 'admin') {
+    return jsonResponse({ error: 'Use the admin login page' }, 403, {}, [
+      clearCookie('sb-access-token'),
+      clearCookie('sb-refresh-token'),
+    ], origin)
+  }
   if (account?.role !== 'creator') {
     return jsonResponse({ error: "You don't have a creator account" }, 403, {}, [
       clearCookie('sb-access-token'),
@@ -1927,10 +1940,13 @@ const requireAdminSecret = (req: Request) => {
   return bearer === AUTH_ADMIN_SECRET || alt === AUTH_ADMIN_SECRET
 }
 
-/** Mark a pending withdrawal paid or rejected. Ops-only (AUTH_ADMIN_SECRET). */
+/** Mark a pending withdrawal paid or rejected. Admin session or AUTH_ADMIN_SECRET. */
 const handleAdminWalletWithdraw = async (req: Request) => {
   const origin = req.headers.get('origin')
-  if (!requireAdminSecret(req)) return jsonResponse({ error: 'Unauthorized' }, 401, {}, [], origin)
+  const adminUser = await requireAdmin(req)
+  if (!adminUser && !requireAdminSecret(req)) {
+    return jsonResponse({ error: 'Unauthorized' }, 401, {}, [], origin)
+  }
 
   const body = await parseJson(req)
   const id = typeof body.withdrawal_id === 'string' ? body.withdrawal_id.trim() : ''
@@ -1963,6 +1979,304 @@ const handleAdminWalletWithdraw = async (req: Request) => {
     return jsonResponse({ error: 'Pending withdrawal not found' }, 404, {}, [], origin)
   }
   return jsonResponse({ status: 'updated', withdrawal: rows[0] }, 200, {}, [], origin)
+}
+
+const handleAdminLogin = async (req: Request) => {
+  const origin = req.headers.get('origin')
+  const { email, password } = await parseJson(req)
+  const normalized = normalizeEmail(email)
+  if (!validEmail(normalized) || !password) {
+    return jsonResponse({ error: 'Missing credentials' }, 400, {}, [], origin)
+  }
+  const limited = await enforceRateLimit(`admin-login:ip:${clientIp(req)}`, 20, 15 * 60 * 1000)
+  if (!limited.ok) return jsonResponse({ error: limited.error }, 429, {}, [], origin)
+
+  const data = await signIn(normalized, password)
+  if (isAuthError(data)) return jsonResponse({ error: authErrorMessage(data, 'Login failed') }, 401, {}, [], origin)
+  if (!data.access_token || !data.refresh_token) {
+    return jsonResponse({ error: 'Login did not return tokens' }, 500, {}, [], origin)
+  }
+
+  const account = await getAccount(data.user?.id)
+  if (account?.role !== 'admin') {
+    return jsonResponse({ error: 'Admin access denied' }, 403, {}, [
+      clearCookie('sb-access-token'),
+      clearCookie('sb-refresh-token'),
+    ], origin)
+  }
+
+  const cookies = [
+    buildCookie('sb-access-token', data.access_token, data.expires_in || 3600),
+    buildCookie('sb-refresh-token', data.refresh_token, 60 * 60 * 24 * 30),
+  ]
+  const user = await userWithRole(data.user)
+  return jsonResponse({
+    user,
+    admin_id: data.user.id,
+    redirect_path: `/admin${data.user.id}`,
+  }, 200, {}, cookies, origin)
+}
+
+const countRows = async (table: string, filter = '') => {
+  const res = await fetch(
+    `${SUPABASE_URL}/rest/v1/${table}?select=id${filter}`,
+    { method: 'HEAD', headers: { ...authHeaders(true), Prefer: 'count=exact', Range: '0-0' } },
+  )
+  const total = (res.headers.get('content-range') || '').split('/')[1]
+  return total && total !== '*' ? Number(total) || 0 : 0
+}
+
+const handleAdminStats = async (req: Request) => {
+  const origin = req.headers.get('origin')
+  if (!await requireAdmin(req)) return jsonResponse({ error: 'Unauthorized' }, 401, {}, [], origin)
+
+  const [users, creators, posts, openTickets, postReports, userReports, pendingWd] = await Promise.all([
+    countRows('user_accounts'),
+    countRows('user_accounts', '&role=eq.creator'),
+    countRows('posts'),
+    countRows('support_tickets', '&status=eq.open'),
+    countRows('post_reports'),
+    countRows('user_reports'),
+    countRows('wallet_withdrawals', '&status=eq.pending'),
+  ])
+
+  return jsonResponse({
+    stats: {
+      users,
+      creators,
+      posts,
+      open_tickets: openTickets,
+      post_reports: postReports,
+      user_reports: userReports,
+      pending_withdrawals: pendingWd,
+    },
+  }, 200, {}, [], origin)
+}
+
+const handleAdminUsers = async (req: Request) => {
+  const origin = req.headers.get('origin')
+  if (!await requireAdmin(req)) return jsonResponse({ error: 'Unauthorized' }, 401, {}, [], origin)
+
+  const res = await fetch(
+    `${SUPABASE_URL}/rest/v1/user_accounts?select=id,role,name,email,created_at&order=created_at.desc&limit=200`,
+    { headers: { ...authHeaders(true) } },
+  )
+  if (!res.ok) return jsonResponse({ error: 'Failed to load users' }, 500, {}, [], origin)
+  const rows = await res.json().catch(() => [])
+  const list = Array.isArray(rows) ? rows : []
+  const creatorIds = list.filter((r) => r.role === 'creator').map((r) => r.id)
+  const profiles: Record<string, string> = {}
+  if (creatorIds.length) {
+    const profileRes = await fetch(
+      `${SUPABASE_URL}/rest/v1/profiles?id=in.(${creatorIds.join(',')})&select=id,username`,
+      { headers: { ...authHeaders(true) } },
+    )
+    const profileRows = profileRes.ok ? await profileRes.json().catch(() => []) : []
+    for (const p of Array.isArray(profileRows) ? profileRows : []) profiles[p.id] = p.username || ''
+  }
+
+  return jsonResponse({
+    users: list.map((row) => ({
+      id: row.id,
+      role: row.role,
+      name: row.name || '',
+      email: row.email || '',
+      username: profiles[row.id] || '',
+      created_at: row.created_at,
+    })),
+  }, 200, {}, [], origin)
+}
+
+const handleAdminPosts = async (req: Request) => {
+  const origin = req.headers.get('origin')
+  if (!await requireAdmin(req)) return jsonResponse({ error: 'Unauthorized' }, 401, {}, [], origin)
+
+  const res = await fetch(
+    `${SUPABASE_URL}/rest/v1/posts?select=id,public_id,caption,media_type,is_paid,price,creator_id,like_count,view_count,created_at&order=created_at.desc&limit=200`,
+    { headers: { ...authHeaders(true) } },
+  )
+  if (!res.ok) return jsonResponse({ error: 'Failed to load posts' }, 500, {}, [], origin)
+  const rows = await res.json().catch(() => [])
+  const list = Array.isArray(rows) ? rows : []
+  const creatorIds = [...new Set(list.map((p) => p.creator_id).filter(Boolean))]
+  const profiles: Record<string, string> = {}
+  if (creatorIds.length) {
+    const profileRes = await fetch(
+      `${SUPABASE_URL}/rest/v1/profiles?id=in.(${creatorIds.join(',')})&select=id,username`,
+      { headers: { ...authHeaders(true) } },
+    )
+    const profileRows = profileRes.ok ? await profileRes.json().catch(() => []) : []
+    for (const p of Array.isArray(profileRows) ? profileRows : []) profiles[p.id] = p.username || ''
+  }
+
+  return jsonResponse({
+    posts: list.map((p) => ({
+      id: p.id,
+      public_id: p.public_id,
+      caption: p.caption || '',
+      media_type: p.media_type,
+      is_paid: p.is_paid === true,
+      price: Number(p.price) || 0,
+      creator_id: p.creator_id,
+      creator_username: profiles[p.creator_id] || '',
+      like_count: Number(p.like_count) || 0,
+      view_count: Number(p.view_count) || 0,
+      created_at: p.created_at,
+    })),
+  }, 200, {}, [], origin)
+}
+
+const handleAdminDeletePost = async (req: Request) => {
+  const origin = req.headers.get('origin')
+  if (!await requireAdmin(req)) return jsonResponse({ error: 'Unauthorized' }, 401, {}, [], origin)
+
+  const body = await parseJson(req)
+  const post = await fetchPostByPublicId(typeof body.public_id === 'string' ? body.public_id : '')
+  if (!post) return jsonResponse({ error: 'Post not found' }, 404, {}, [], origin)
+
+  const paths = Array.isArray(post.media_paths) ? post.media_paths as string[] : []
+  if (paths.length) {
+    await fetch(`${SUPABASE_URL}/storage/v1/object/${POST_MEDIA_BUCKET}`, {
+      method: 'DELETE',
+      headers: { ...authHeaders(true) },
+      body: JSON.stringify({ prefixes: paths }),
+    }).catch(() => {})
+  }
+
+  const res = await fetch(`${SUPABASE_URL}/rest/v1/posts?id=eq.${post.id}`, {
+    method: 'DELETE',
+    headers: { ...authHeaders(true) },
+  })
+  if (!res.ok) return jsonResponse({ error: 'Failed to delete post' }, 500, {}, [], origin)
+  return jsonResponse({ status: 'post_deleted' }, 200, {}, [], origin)
+}
+
+const handleAdminSupportTickets = async (req: Request) => {
+  const origin = req.headers.get('origin')
+  if (!await requireAdmin(req)) return jsonResponse({ error: 'Unauthorized' }, 401, {}, [], origin)
+
+  const res = await fetch(
+    `${SUPABASE_URL}/rest/v1/support_tickets?select=*&order=created_at.desc&limit=200`,
+    { headers: { ...authHeaders(true) } },
+  )
+  if (!res.ok) return jsonResponse({ error: 'Failed to load tickets' }, 500, {}, [], origin)
+  const rows = await res.json().catch(() => [])
+  const list = Array.isArray(rows) ? rows : []
+  const userIds = [...new Set(list.map((t) => t.user_id).filter(Boolean))]
+  const accounts: Record<string, { name: string; email: string }> = {}
+  if (userIds.length) {
+    const accountRes = await fetch(
+      `${SUPABASE_URL}/rest/v1/user_accounts?id=in.(${userIds.join(',')})&select=id,name,email`,
+      { headers: { ...authHeaders(true) } },
+    )
+    const accountRows = accountRes.ok ? await accountRes.json().catch(() => []) : []
+    for (const a of Array.isArray(accountRows) ? accountRows : []) {
+      accounts[a.id] = { name: a.name || '', email: a.email || '' }
+    }
+  }
+
+  return jsonResponse({
+    tickets: list.map((t) => ({
+      id: t.id,
+      user_id: t.user_id,
+      user_name: accounts[t.user_id]?.name || '',
+      user_email: accounts[t.user_id]?.email || '',
+      subject: t.subject,
+      message: t.message,
+      status: t.status,
+      admin_reply: t.admin_reply || '',
+      created_at: t.created_at,
+      updated_at: t.updated_at,
+    })),
+  }, 200, {}, [], origin)
+}
+
+const handleAdminUpdateSupportTicket = async (req: Request) => {
+  const origin = req.headers.get('origin')
+  if (!await requireAdmin(req)) return jsonResponse({ error: 'Unauthorized' }, 401, {}, [], origin)
+
+  const body = await parseJson(req)
+  const id = typeof body.id === 'string' ? body.id.trim() : ''
+  const status = body.status === 'open' || body.status === 'in_progress' || body.status === 'resolved'
+    ? body.status
+    : ''
+  const adminReply = typeof body.admin_reply === 'string' ? body.admin_reply.trim().slice(0, 2000) : ''
+  if (!/^[0-9a-f-]{36}$/i.test(id) || !status) {
+    return jsonResponse({ error: 'id and status required' }, 400, {}, [], origin)
+  }
+
+  const res = await fetch(`${SUPABASE_URL}/rest/v1/support_tickets?id=eq.${id}`, {
+    method: 'PATCH',
+    headers: { ...authHeaders(true), Prefer: 'return=representation' },
+    body: JSON.stringify({
+      status,
+      admin_reply: adminReply,
+      updated_at: new Date().toISOString(),
+    }),
+  })
+  if (!res.ok) return jsonResponse({ error: 'Failed to update ticket' }, 500, {}, [], origin)
+  const rows = await res.json().catch(() => [])
+  return jsonResponse({ ticket: Array.isArray(rows) ? rows[0] : rows }, 200, {}, [], origin)
+}
+
+const handleAdminPostReports = async (req: Request) => {
+  const origin = req.headers.get('origin')
+  if (!await requireAdmin(req)) return jsonResponse({ error: 'Unauthorized' }, 401, {}, [], origin)
+
+  const res = await fetch(
+    `${SUPABASE_URL}/rest/v1/post_reports?select=*&order=created_at.desc&limit=200`,
+    { headers: { ...authHeaders(true) } },
+  )
+  if (!res.ok) return jsonResponse({ error: 'Failed to load reports' }, 500, {}, [], origin)
+  const rows = await res.json().catch(() => [])
+  return jsonResponse({ reports: Array.isArray(rows) ? rows : [] }, 200, {}, [], origin)
+}
+
+const handleAdminUserReports = async (req: Request) => {
+  const origin = req.headers.get('origin')
+  if (!await requireAdmin(req)) return jsonResponse({ error: 'Unauthorized' }, 401, {}, [], origin)
+
+  const res = await fetch(
+    `${SUPABASE_URL}/rest/v1/user_reports?select=*&order=created_at.desc&limit=200`,
+    { headers: { ...authHeaders(true) } },
+  )
+  if (!res.ok) return jsonResponse({ error: 'Failed to load reports' }, 500, {}, [], origin)
+  const rows = await res.json().catch(() => [])
+  return jsonResponse({ reports: Array.isArray(rows) ? rows : [] }, 200, {}, [], origin)
+}
+
+const handleAdminWithdrawals = async (req: Request) => {
+  const origin = req.headers.get('origin')
+  if (!await requireAdmin(req)) return jsonResponse({ error: 'Unauthorized' }, 401, {}, [], origin)
+
+  const res = await fetch(
+    `${SUPABASE_URL}/rest/v1/wallet_withdrawals?select=*&order=created_at.desc&limit=200`,
+    { headers: { ...authHeaders(true) } },
+  )
+  if (!res.ok) return jsonResponse({ error: 'Failed to load withdrawals' }, 500, {}, [], origin)
+  const rows = await res.json().catch(() => [])
+  const list = Array.isArray(rows) ? rows : []
+  const creatorIds = [...new Set(list.map((w) => w.creator_id).filter(Boolean))]
+  const accounts: Record<string, { name: string; email: string }> = {}
+  if (creatorIds.length) {
+    const accountRes = await fetch(
+      `${SUPABASE_URL}/rest/v1/user_accounts?id=in.(${creatorIds.join(',')})&select=id,name,email`,
+      { headers: { ...authHeaders(true) } },
+    )
+    const accountRows = accountRes.ok ? await accountRes.json().catch(() => []) : []
+    for (const a of Array.isArray(accountRows) ? accountRows : []) {
+      accounts[a.id] = { name: a.name || '', email: a.email || '' }
+    }
+  }
+
+  return jsonResponse({
+    withdrawals: list.map((w) => ({
+      ...w,
+      amount: Number(w.amount_paise || 0) / 100,
+      creator_name: accounts[w.creator_id]?.name || '',
+      creator_email: accounts[w.creator_id]?.email || '',
+    })),
+  }, 200, {}, [], origin)
 }
 
 const handleGetSupportTickets = async (req: Request) => {
@@ -3521,6 +3835,16 @@ const routeRequest = async (req: Request) => {
   const path = url.pathname.replace(/\/+$|$/, '')
   const isRoute = (name: string) => path.endsWith(`/auth/${name}`) || path.endsWith(`/${name}`)
 
+  if (isRoute('admin-login') && req.method === 'POST') return handleAdminLogin(req)
+  if (isRoute('admin/stats') && req.method === 'GET') return handleAdminStats(req)
+  if (isRoute('admin/users') && req.method === 'GET') return handleAdminUsers(req)
+  if (isRoute('admin/posts') && req.method === 'GET') return handleAdminPosts(req)
+  if (isRoute('admin/posts/delete') && req.method === 'POST') return handleAdminDeletePost(req)
+  if (isRoute('admin/support-tickets') && req.method === 'GET') return handleAdminSupportTickets(req)
+  if (isRoute('admin/support-tickets/update') && req.method === 'POST') return handleAdminUpdateSupportTicket(req)
+  if (isRoute('admin/reports/posts') && req.method === 'GET') return handleAdminPostReports(req)
+  if (isRoute('admin/reports/users') && req.method === 'GET') return handleAdminUserReports(req)
+  if (isRoute('admin/withdrawals') && req.method === 'GET') return handleAdminWithdrawals(req)
   if (isRoute('login') && req.method === 'POST') return handleLogin(req)
   if (isRoute('user-login') && req.method === 'POST') return handleUserLogin(req)
   if (isRoute('user-signup') && req.method === 'POST') return handleUserSignup(req)

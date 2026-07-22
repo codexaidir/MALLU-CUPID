@@ -36,6 +36,8 @@ import UserSignup from "./pages/UserSignup";
 import UserOtpVerify from "./pages/UserOtpVerify";
 import UserPasswordReset from "./pages/UserPasswordReset";
 import PaymentConfirmationPage from "./pages/PaymentConfirmationPage";
+import AdminLoginPage from "./pages/admin/AdminLoginPage";
+import AdminDashboardPage from "./pages/admin/AdminDashboardPage";
 
 function LandingPage() {
   return (
@@ -109,6 +111,9 @@ function UsernameRouteSwitch() {
   }
 
   if (!looksLikePublicSlug) {
+    if (user?.user_metadata?.role === "admin") {
+      return <Navigate to={`/admin${user.id}`} replace />;
+    }
     if (user?.user_metadata?.role === "user") {
       return <Navigate to="/user-inbox" replace />;
     }
@@ -137,6 +142,8 @@ export default function App() {
             <Route path="/privacy-policy" element={<AuthLayout><PrivacyPolicyPage /></AuthLayout>} />
             <Route path="/refund-policy" element={<AuthLayout><RefundPolicyPage /></AuthLayout>} />
             <Route path="/contact-us" element={<AuthLayout><ContactUsPage /></AuthLayout>} />
+            <Route path="/adminlogin" element={<AdminLoginPage />} />
+            <Route path="/admin:adminId" element={<AdminDashboardPage />} />
             <Route path="/userlogin" element={<UserLogin />} />
             <Route path="/usersignup" element={<UserSignup />} />
             <Route path="/userotpverify" element={<UserOtpVerify />} />
