@@ -181,7 +181,6 @@ export default function PublicProfilePage() {
     () => (data?.posts || []).filter((post) => post.media_type === tab),
     [data, tab],
   );
-  const hero = data?.posts.find((post) => post.media_type === "image" && post.media_url);
   const userLogin = () => navigate(`/userlogin?redirect=${encodeURIComponent(slug)}`);
   const isLoggedIn = Boolean(user) || Boolean(data?.viewer?.authenticated);
   const isOwnPage =
@@ -406,15 +405,7 @@ export default function PublicProfilePage() {
               {installed ? "Installed" : "Install"}
             </button>
           </div>
-          <div className="h-[238px] bg-zinc-900 overflow-hidden">
-            {hero?.media_url ? (
-              <img src={hero.media_url} alt="" className="w-full h-full object-cover pointer-events-none" draggable={false} onContextMenu={(e) => e.preventDefault()} />
-            ) : data?.profile.avatar_url ? (
-              <img src={data.profile.avatar_url} alt="" className="w-full h-full object-cover opacity-80 pointer-events-none" draggable={false} />
-            ) : (
-              <div className="w-full h-full bg-gradient-to-br from-zinc-800 via-rose-950 to-zinc-950" />
-            )}
-          </div>
+          <div className="h-[238px] overflow-hidden bg-gradient-to-br from-rose-400 via-rose-500 to-amber-400" />
         </section>
 
         {loading && (
