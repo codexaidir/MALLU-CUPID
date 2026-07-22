@@ -6,7 +6,8 @@ The application uses URL-based pagination (React Router) with the following rout
 
 - **`/` (Landing Page)**
   - `Hero`, `HowItWorks`, `CommunityCTA`, and `Footer` sections.
-  - Header with a "Get Started" button leading to `/login`.
+  - Header: large brand logo (`BrandLogo` size `xl`), How it Works, Become a creator, Get Started → `/login`.
+  - Footer: brand + short product blurb, nav links (How it works / Become a creator / Fan login / Contact), copyright, Privacy / Terms / Refund. No merchant-details address card.
 - **`/login` (Login Page)**
   - Uses `Email` and `Password` (with eye icon to toggle visibility).
   - "Forgot Password?" link -> navigates to `/forgot-password`.
@@ -43,8 +44,9 @@ The application uses URL-based pagination (React Router) with the following rout
   - Replaced welcome message with an Instagram-like profile header.
   - Profile header includes circular profile image, username, verification badge, and edit/share buttons.
   - Share Profile button opens a modal to copy the profile URL to the clipboard.
-  - Displays post count and follower count.
+  - Displays post count and **subscribers** (follower count; "following" is not shown).
   - Shows display name and bio below stats.
+  - Exclusive Rooms highlights row (Instagram-style circles; create up to 4 rooms).
   - Implemented an Instagram-like gallery tab bar (Grid, Video).
   - Replaced the placeholder with a responsive 3-column media grid supporting images and videos (indicated by a play icon) and hover states.
   - Gallery renders database posts only; empty database shows an empty state.
@@ -111,12 +113,12 @@ The application uses URL-based pagination (React Router) with the following rout
 - Logged-in URLs are username-based: profile at `/<username>`, sub-pages at `/<username>/<page>` (edit-profile, create-post, verification, wallet, help, notifications, inbox). Legacy paths (`/dashboard`, `/edit-profile`, `/create-post`, `/verification`) redirect using the session's `user_metadata.username`.
 - `CreatorLayout` wraps all `/:username` routes: requires a session, verifies the URL username against the DB profile (redirects to the canonical one, preserving sub-path), and renders the fixed mobile header + navbar on every logged-in page.
 - Edge function `POST /profile` now syncs a changed username into auth `user_metadata` (admin API) so URL building stays correct.
-- Mobile header (fixed top): logo only on the left (no "Creator Hub" text), messenger icon on the right -> `/<username>/inbox`.
+- Mobile header (fixed top): brand icon on the left, messenger + sign-out on the right.
 - Mobile navbar (fixed bottom), left to right: Profile, Notifications, + New post (Photo/Video drop box), Wallet, Help.
 - Dashboard: settings icon next to the username removed (Edit profile button remains); gap between header and profile section tightened; desktop sidebar links now go to Inbox, Wallet, Verification, and a new Help entry.
 - Migration `006`: `payout_accounts` (bank details, RLS read-own) and `support_tickets` (subject 3-120, message 10-1000, status open/in_progress/resolved, admin_reply, RLS read-own).
 - New endpoints (cookie auth): `GET/POST /payout-account` (validates account holder, 9-18 digit account number, IFSC `AAAA0XXXXXX`, optional UPI) and `GET/POST /support-tickets`.
-- Wallet page: balance ₹0 (no transactions system yet), content sales/lifetime earnings stats, bank details form persisted to DB (masked display + edit), withdraw disabled below ₹100 minimum, sales empty state.
+- Wallet page: lifetime earnings + withdrawable balance (sales paid ≥24h ago minus withdrawals), platform withdrawal fee shown from API, content sales (posts + exclusive room entries), bank details form persisted to DB (masked display + edit), withdraw disabled below ₹100 minimum.
 - Help page: create support tokens to contact admin, list with status badges and admin reply display.
 - Notifications and Inbox pages have clean empty states pending those systems.
 
@@ -167,17 +169,17 @@ The application uses URL-based pagination (React Router) with the following rout
 
 - URL: `/<username><5-digit serial>` (e.g. `/founder00152`). Migration `011` adds `public_serial` to profiles — a permanent unique number from a sequence starting at 151, backfilled in signup order and auto-assigned to new signups. Routing: a slug ending in 5 digits renders the public page; everything else (including the logged-in user's own username) stays on the creator app.
 - Mobile-only gate: layered device detection (mobile user agent AND touch points AND coarse primary pointer, re-checked on resize/orientation change). Desktop visitors see a "Mobile only" block screen. Note: client-side detection is best-effort; a determined user with devtools emulation can bypass it, which is the browser-platform limit.
-- Guest endpoint `GET /public-profile?slug=` (no auth): validates the slug (serial lookup + exact username prefix match, 404 otherwise) and returns profile (username, name, avatar, bio, serial), stats (post count + follower count, no following), and up to 60 posts with live like/view counts. Paid posts never include a media URL for guests — only `is_paid` + price; free posts get a 1h signed preview of their first media.
-- Page layout: fixed header (logo + Login button that opens a "Login coming soon" bottom sheet — intentionally NOT linked to the creator login), profile section (avatar, username, name, posts + followers counts, bio; no link shown), Follow + Chat buttons (open login-required sheets for guests), sticky photo/video separator tabs, Instagram-style 3-column grid (locked tiles with lock icon + ₹price for paid posts, play badge for videos, x/n count for multi-image), and a bottom "Be a creator" gradient card with the **Start Earning** CTA -> `/signup`.
-- Tested as a guest via API (valid slug, wrong prefix, unknown serial, malformed slug) and in the browser with iPhone emulation (gate blocks desktop, page renders on mobile, login/follow/chat sheets, photo/video tabs, locked paid tiles).
+- Guest endpoint `GET /public-profile?slug=` (no auth): validates the slug (serial lookup + exact username prefix match, 404 otherwise) and returns profile (username, name, avatar, bio, serial), stats (post count + follower/subscriber count, no following), exclusive rooms summary for highlights, and up to 60 posts with live like/view counts. Paid posts never include a media URL for guests — only `is_paid` + price; free posts get a 1h signed preview of their first media.
+- Page layout: fixed header (logo + Login), **gradient-only cover** (`from-rose-400 via-rose-500 to-amber-400`), avatar, username/name, posts + subscribers, bio, Follow + Chat (guests → `/userlogin?redirect=...`), Exclusive Rooms highlights, sticky photo/video tabs, Instagram-style 3-column grid (locked paid tiles, play badge for videos), and bottom **Be a creator / Start Earning** → `/`.
+- Tested as a guest via API (valid slug, wrong prefix, unknown serial, malformed slug) and in the browser with iPhone emulation (gate blocks desktop, page renders on mobile, login/follow/chat, photo/video tabs, locked paid tiles).
 
 ## Consumer users vs creators + redesigned public page
 
 - Migration `012`: `user_accounts` table with authoritative `role` (`creator` | `user`), name/email; existing profiles backfilled as creators. `follows.follower_id` now references `auth.users` so consumers can follow creators without needing a creator profile.
 - Creator auth (`/login`, `/signup`, `/verify-otp`) stays creator-only. `/login` rejects user-role accounts with **"You don't have a creator account"**. New creator signups write `role: creator` into both auth metadata and `user_accounts`.
 - Consumer auth pages: `/userlogin`, `/usersignup`, `/userotpverify`, `/userpasswordreset`. Endpoints: `POST /user-login`, `/user-signup`, `/user-verify`, `/user-resend`, `/user-forgot`, `/user-reset`. Signup = email + name + password → 6-digit OTP → session + return to `?redirect=<public slug>`. Reset = email → OTP → new password → same redirect. Follow / Chat / paid post open require login and send guests to `/userlogin?redirect=...`.
-- Public page redesign (reference link-in-bio layout): hero cover, Install PWA button, Login/Follow overlays, avatar, "Hi, I'm …", posts/followers, Follow + Chat Now, Exclusive Content photo/video tabs, then a large bottom **"Be a creator / Start Earning"** section that sits well below the posts (no overlay). PWA: `manifest.webmanifest`, icon, service worker; Install uses Chrome `beforeinstallprompt` when available, otherwise shows Android/iOS Add-to-Home-Screen instructions.
-- Guest content routes: `/view/:postId` (media viewer), `/user-inbox`, `/user-notifications`, and `/user-chat/:conversationId` for logged-in consumers outside the creator app shell.
+- Public page redesign (reference link-in-bio layout): gradient cover (not a media banner), Install PWA button, Login/Follow overlays, avatar, "Hi, I'm …", posts/subscribers, Follow + Chat Now, Exclusive Rooms highlights, Exclusive Content photo/video tabs, then a large bottom **"Be a creator / Start Earning"** section that sits well below the posts (no overlay). PWA: `manifest.webmanifest`, icon, service worker; Install uses Chrome `beforeinstallprompt` when available, otherwise shows Android/iOS Add-to-Home-Screen instructions.
+- Guest content routes: `/view/:postId` (media viewer), `/view/exclusive/:postId` (exclusive media), `/user-inbox`, `/user-notifications`, and `/user-chat/:conversationId` for logged-in consumers outside the creator app shell.
 
 ## Live Razorpay paid-post reconciliation
 
@@ -188,13 +190,13 @@ The application uses URL-based pagination (React Router) with the following rout
 - If the browser callback is lost after debit, the confirmation page, `GET /post-payment-status`, and `POST /razorpay-webhook` (HMAC with `RAZORPAY_WEBHOOK_SECRET`) reconcile captured payments. An authorized/processing payment shows **Confirmation pending / Do not pay again**. Purchase recording is atomic/idempotent.
 
 - Brand assets: logo `https://res.cloudinary.com/dsamz0zji/image/upload/v1784680966/mallucupidlogo_a44gud.png`; app icon `https://res.cloudinary.com/dsamz0zji/image/upload/v1784680970/appicon_n1we3u.png` (headers, footer, PWA, emails, favicon).
-- Legal pages (`/terms-and-conditions`, `/privacy-policy`, `/contact-us`, footer merchant block): MalluCupid platform terms (creators, paid unlocks, Razorpay); business address Bengaluru JP Nagar; support `support@mallucupid.com`; phone `+91-9581150441`.
+- Legal pages: `/terms-and-conditions`, `/privacy-policy`, `/refund-policy`, `/contact-us`. MalluCupid platform terms (creators, paid unlocks, exclusive rooms, Razorpay). Contact: company address `456, Gautam Nagar, JP Nagar 7th Phase, Bengaluru, Karnataka 560078`; grievance officer Mr. Shailesh (Kothnur Main Rd / JP Nagar 560076); support `support@mallucupid.com` / `info@mallucupid.com`; phone `+91-9581150441`.
 
 ## Wallet / auth / media hardening (017–018)
 
 - Migration `017`: `wallet_withdrawals` + `auth_rate_limits`; revoke PostgREST grants on posts/likes/views/follows/purchases/payout/tickets/reports; drop public SELECT policies that leaked `media_paths`.
 - Migration `018`: atomic `request_wallet_withdrawal` + `wallet_lifetime_paise` RPCs; drop authenticated `post-media` storage CRUD policies (signed URLs / service role only); revoke messaging/notifications/user_accounts PostgREST grants.
-- `GET /wallet`: lifetime balance from full paid-sales sum (not capped at 100); sales list still shows latest 100; masked bank details.
+- `GET /wallet`: lifetime from paid post unlocks + exclusive room entries; withdrawable via 24h hold RPC; sales list includes both kinds; fee bps + masked bank details.
 - `POST /wallet-withdraw`: min ₹100; atomic RPC prevents double-spend races; creates `pending` withdrawal.
 - `POST /admin-wallet-withdraw`: ops path with `AUTH_ADMIN_SECRET` (`Authorization: Bearer …` or `x-admin-secret`) to mark pending withdrawals `paid`/`rejected`.
 - Media: authenticated JSON APIs return short-lived signed storage URLs after access checks (no cross-origin cookie required for `<img>`/`<video>`). `/secure-media` remains as a fallback redirect.
@@ -217,12 +219,54 @@ The application uses URL-based pagination (React Router) with the following rout
 
 - Migration `020`: `user_accounts.role` includes `admin`.
 - Migration `021`: 24h withdrawal hold (`wallet_withdrawable_paise`); withdrawal statuses `pending`/`accepted`/`paid`/`rejected`; transfer proof fields + `admin-slips` bucket.
-- Login: `https://www.mallucupid.com/adminlogin` (email + password only; no signup/reset).
-- Dashboard: `https://www.mallucupid.com/admin<admin-user-uuid>` — Overview, Users (profile detail), Posts (view/delete media), Wallet & Payments, Creator Settlements, Withdrawals (view/accept/complete with txn ID + slip), Help, Reports.
+- Login: `https://www.mallucupid.com/adminlogin` (email + password only; no signup/reset). Role-gated: only `admin` accounts may enter.
+- Dashboard URL: `https://www.mallucupid.com/admin<admin-user-uuid>` (matched before `/:username` so UUID routes are not treated as usernames). Tabs: Overview, Users (profile detail), Posts (view/delete media), Wallet & Payments (post unlocks **and** exclusive room entries), Creator Settlements, Withdrawals (view/accept/complete with txn ID + slip), Help, Reports.
 - Creators can withdraw only from sales paid ≥24 hours ago.
-- Migration `022`: withdrawal platform fee via SQL (`platform_withdrawal_fee_bps`, `calc_withdrawal_platform_fee_paise`); rate in `platform_config.withdrawal_fee_bps` (900 = 9%); gross reserved from wallet, `net_payout_paise` is what admin transfers.
-- Migration `023`: Exclusive Rooms (max 4/creator) — Instagram-highlights UI; monthly entry fee via Razorpay (30-day access); room gallery posts with no per-post pricing; earnings included in wallet lifetime/withdrawable.
-- Migration `024`: exclusive checkout uniqueness (one pending per user/room), cancelled status, payment amount matching on webhook/reconcile, locked-room metadata redaction, room delete, wallet/admin exclusive sales.
 - Bootstrap admin: `node scripts/create-admin-user.mjs` (requires `SUPABASE_SERVICE_ROLE_KEY`).
+
+## Withdrawal platform fee (022)
+
+- Migration `022`: `platform_config.withdrawal_fee_bps` (default **900** = 9%). Fee is never hardcoded in the frontend.
+- SQL helpers (service role): `platform_withdrawal_fee_bps`, `calc_withdrawal_platform_fee_paise`, `calc_withdrawal_net_payout_paise`.
+- On withdraw: **gross** amount is reserved from the wallet; admin transfers **net** (`net_payout_paise`). Wallet UI and admin withdrawal views show fee + net from the API.
+
+## Exclusive Rooms (023–024)
+
+Instagram-highlights style rooms with a **monthly entry fee** (Razorpay). Paying grants **30 days** of access to that room’s gallery. Room posts have **no per-post price** — access is entirely via the room subscription.
+
+### Schema
+
+- Migration `023`:
+  - `exclusive_rooms` — max **4 per creator** (trigger `exclusive_room_limit`); name 1–10 chars; `entry_fee_paise` ≥ ₹10; `thumbnail_path`; `sort_order` 0–3 unique per creator.
+  - `exclusive_room_posts` — caption, `media_type` image/video, `media_paths`, unique `public_id`.
+  - `exclusive_room_subscriptions` — Razorpay order/payment ids, `amount_paise`, `status`, `expires_at` (paid → +30 days).
+  - RLS: revoke from `anon`/`authenticated`; **service_role only**. Media under `post-media` at `{user_id}/exclusive/{room_id}/...`.
+- Migration `024`:
+  - Statuses: `created` / `paid` / `expired` / `cancelled`.
+  - Unique pending checkout: one `(room_id, user_id)` where `status='created'`.
+  - `expire_exclusive_subscriptions()` housekeeping helper.
+
+### Backend (edge function `auth`)
+
+- Rooms: `GET/POST /exclusive-rooms`, `GET /exclusive-room`, `POST /exclusive-rooms/update`, `POST /exclusive-rooms/delete`, thumbnail upload/confirm.
+- Posts: `POST /exclusive-room-upload-urls`, `POST /exclusive-room-posts`, `GET /exclusive-room-post`, `POST /exclusive-room-posts/delete`.
+- Payments: `POST /exclusive-room-checkout`, `POST /exclusive-room-verify-payment`, `GET /exclusive-room-payment-status`.
+- Webhook + payment-status reconcile **match Razorpay amount** to the subscription row; stale fee / amount mismatch cancels or ignores pending orders (same hardening pattern as paid posts).
+- Locked rooms (no active access): response includes **`post_count` only** — no captions, media paths, or post IDs.
+- Active access via RPC `has_active_exclusive_access`. Owner always has access.
+- Wallet lifetime / withdrawable and admin payments include paid exclusive subscriptions. Creator email on exclusive entry uses Resend (`kind: exclusive`).
+
+### Frontend routes
+
+- Creator app: `/<username>/exclusive/new`, `/<username>/exclusive/:roomId`, `/<username>/exclusive/:roomId/edit`, `/<username>/exclusive/:roomId/create`.
+- Fan / shared: `/exclusive/:roomId` (auth required); media `/view/exclusive/:postId`.
+- UI: `ExclusiveHighlightsRow` on dashboard + public profile (lock badge when locked); room page with owner Edit / Post / Delete controls on the fan route when the viewer is the creator; checkout → Razorpay → verify → gallery.
+
+## Ops notes
+
+- Supabase project ref: `rytulzgsuzgicmpvrrxn`.
+- Apply migrations: `npx supabase db push` (linked project; password via CLI prompt or flag).
+- Deploy auth function: `npx supabase functions deploy auth --no-verify-jwt --project-ref rytulzgsuzgicmpvrrxn`.
+- Secrets live only in Supabase / Amplify — never commit a `.env` file.
 
 
