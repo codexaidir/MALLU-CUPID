@@ -432,7 +432,7 @@ export async function togglePublicFollow(slug: string): Promise<{ following?: bo
 
 export interface NotificationItem {
   id: string;
-  type: 'like' | 'purchase' | 'request' | 'accept';
+  type: 'like' | 'purchase' | 'request' | 'accept' | 'follow';
   read: boolean;
   created_at: string;
   actor: { username: string; full_name: string | null; avatar_url: string | null };

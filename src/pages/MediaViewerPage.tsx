@@ -3,7 +3,7 @@ import { useNavigate, useParams } from "react-router-dom";
 import { motion, AnimatePresence } from "motion/react";
 import {
   ArrowLeft, MoreVertical, Heart, Pencil, Trash2, Flag, ChevronLeft, ChevronRight,
-  Play, Pause, Loader2, LockKeyhole, AlertCircle, X, Eye,
+  Play, Pause, Loader2, LockKeyhole, AlertCircle, X, Eye, SkipBack, SkipForward,
 } from "lucide-react";
 import {
   getPost, togglePostLike, deletePost, checkoutPost,
@@ -19,6 +19,8 @@ const formatTime = (seconds: number) => {
   const secs = Math.floor(seconds % 60);
   return `${mins}:${secs.toString().padStart(2, "0")}`;
 };
+
+const SEEK_STEP_SECONDS = 5;
 
 export default function MediaViewerPage() {
   const { username, postId } = useParams<{ username: string; postId: string }>();
@@ -176,12 +178,59 @@ export default function MediaViewerPage() {
     }
   };
 
-  const handleSeek = (event: React.MouseEvent<HTMLDivElement>) => {
+  const seekTo = useCallback((seconds: number) => {
     const video = videoRef.current;
-    if (!video || !duration) return;
+    if (!video) return;
+    const max = Number.isFinite(duration) && duration > 0 ? duration : video.duration;
+    if (!Number.isFinite(max) || max <= 0) return;
+    const next = Math.min(Math.max(seconds, 0), max);
+    video.currentTime = next;
+    setCurrentTime(next);
+  }, [duration]);
+
+  const seekBy = useCallback((delta: number) => {
+    seekTo(currentTime + delta);
+  }, [currentTime, seekTo]);
+
+  const seekToRatio = useCallback((ratio: number) => {
+    const video = videoRef.current;
+    const max = Number.isFinite(duration) && duration > 0 ? duration : video?.duration ?? 0;
+    if (!Number.isFinite(max) || max <= 0) return;
+    seekTo(ratio * max);
+  }, [duration, seekTo]);
+
+  const handleSeek = (event: React.MouseEvent<HTMLDivElement>) => {
+    event.stopPropagation();
     const rect = event.currentTarget.getBoundingClientRect();
     const ratio = Math.min(Math.max((event.clientX - rect.left) / rect.width, 0), 1);
-    video.currentTime = ratio * duration;
+    seekToRatio(ratio);
+  };
+
+  const handleSeekPointer = (event: React.PointerEvent<HTMLDivElement>) => {
+    event.stopPropagation();
+    event.preventDefault();
+    const bar = event.currentTarget;
+    const seekAt = (clientX: number) => {
+      const rect = bar.getBoundingClientRect();
+      const ratio = Math.min(Math.max((clientX - rect.left) / rect.width, 0), 1);
+      seekToRatio(ratio);
+    };
+    seekAt(event.clientX);
+    const onMove = (e: PointerEvent) => seekAt(e.clientX);
+    const onUp = () => {
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", onUp);
+    };
+    window.addEventListener("pointermove", onMove);
+    window.addEventListener("pointerup", onUp);
+  };
+
+  const handleVideoDoubleTap = (event: React.MouseEvent<HTMLDivElement>) => {
+    const rect = event.currentTarget.getBoundingClientRect();
+    const x = event.clientX - rect.left;
+    if (x < rect.width * 0.35) seekBy(-SEEK_STEP_SECONDS);
+    else if (x > rect.width * 0.65) seekBy(SEEK_STEP_SECONDS);
+    else togglePlay();
   };
 
   const mediaUrls = post?.media_urls || [];
@@ -367,7 +416,11 @@ export default function MediaViewerPage() {
             )}
           </>
         ) : post && post.media_type === "video" ? (
-          <div className="relative w-full h-full flex items-center justify-center" onClick={togglePlay}>
+          <div
+            className="relative w-full h-full flex items-center justify-center"
+            onClick={togglePlay}
+            onDoubleClick={handleVideoDoubleTap}
+          >
             <SecureVideo
               ref={videoRef}
               src={mediaUrls[0]}
@@ -402,25 +455,50 @@ export default function MediaViewerPage() {
               onClick={(e) => e.stopPropagation()}
             >
               <div
-                className="h-4 flex items-center cursor-pointer group"
+                className="h-6 flex items-center cursor-pointer group touch-none"
                 onClick={handleSeek}
+                onPointerDown={handleSeekPointer}
+                role="slider"
+                aria-label="Video progress"
+                aria-valuemin={0}
+                aria-valuemax={duration || 0}
+                aria-valuenow={currentTime}
               >
-                <div className="w-full h-1 bg-white/30 rounded-full overflow-hidden group-hover:h-1.5 transition-all">
+                <div className="w-full h-1.5 bg-white/30 rounded-full overflow-hidden group-hover:h-2 transition-all">
                   <div
                     className="h-full bg-rose-500 rounded-full"
                     style={{ width: duration ? `${(currentTime / duration) * 100}%` : "0%" }}
                   />
                 </div>
               </div>
-              <div className="flex items-center justify-between mt-1.5">
-                <button
-                  onClick={togglePlay}
-                  aria-label={isPlaying ? "Pause" : "Play"}
-                  className="p-1 text-white"
-                >
-                  {isPlaying ? <Pause className="w-4 h-4 fill-white" /> : <Play className="w-4 h-4 fill-white" />}
-                </button>
-                <span className="text-white/90 text-xs font-medium tabular-nums">
+              <div className="flex items-center justify-between mt-1.5 gap-2">
+                <div className="flex items-center gap-1">
+                  <button
+                    type="button"
+                    onClick={() => seekBy(-SEEK_STEP_SECONDS)}
+                    aria-label={`Rewind ${SEEK_STEP_SECONDS} seconds`}
+                    className="p-2 text-white hover:bg-white/10 rounded-full transition-colors"
+                  >
+                    <SkipBack className="w-5 h-5 fill-white" />
+                  </button>
+                  <button
+                    type="button"
+                    onClick={togglePlay}
+                    aria-label={isPlaying ? "Pause" : "Play"}
+                    className="p-2 text-white hover:bg-white/10 rounded-full transition-colors"
+                  >
+                    {isPlaying ? <Pause className="w-5 h-5 fill-white" /> : <Play className="w-5 h-5 fill-white" />}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => seekBy(SEEK_STEP_SECONDS)}
+                    aria-label={`Forward ${SEEK_STEP_SECONDS} seconds`}
+                    className="p-2 text-white hover:bg-white/10 rounded-full transition-colors"
+                  >
+                    <SkipForward className="w-5 h-5 fill-white" />
+                  </button>
+                </div>
+                <span className="text-white/90 text-xs font-medium tabular-nums shrink-0">
                   {formatTime(currentTime)} / {formatTime(duration)}
                 </span>
               </div>

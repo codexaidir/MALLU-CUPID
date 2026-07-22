@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { motion } from "motion/react";
-import { ArrowLeft, Bell, Check, Heart, IndianRupee, Plus, Loader2 } from "lucide-react";
+import { ArrowLeft, Bell, Check, Heart, IndianRupee, Plus, Loader2, UserPlus } from "lucide-react";
 import {
   getNotifications,
   markNotificationsRead,
@@ -37,6 +37,7 @@ const BADGE: Record<
 > = {
   like: { icon: Heart, className: "bg-rose-500" },
   purchase: { icon: IndianRupee, className: "bg-amber-500" },
+  follow: { icon: UserPlus, className: "bg-violet-500" },
   request: { icon: Plus, className: "bg-sky-500" },
   accept: { icon: Check, className: "bg-emerald-500" },
 };
@@ -57,6 +58,12 @@ const messageFor = (n: NotificationItem): React.ReactNode => {
       return (
         <>
           <span className="font-semibold">{name}</span> unlocked your paid post{caption ? <>{" "}<span className="text-zinc-600">{caption}</span></> : "."}
+        </>
+      );
+    case "follow":
+      return (
+        <>
+          <span className="font-semibold">{name}</span> started following you.
         </>
       );
     case "request":
@@ -186,6 +193,8 @@ export default function NotificationsPage() {
   const openNotification = (n: NotificationItem) => {
     if ((n.type === "like" || n.type === "purchase") && n.post_public_id) {
       navigate(username ? `/${username}/post/${n.post_public_id}` : `/view/${n.post_public_id}`);
+    } else if (n.type === "follow") {
+      navigate(username ? `/${username}/inbox` : "/user-inbox");
     } else if ((n.type === "request" || n.type === "accept") && n.conversation_id) {
       navigate(username ? `/${username}/chat/${n.conversation_id}` : `/user-chat/${n.conversation_id}`);
     }
@@ -228,7 +237,7 @@ export default function NotificationsPage() {
             </div>
             <p className="text-zinc-900 font-semibold mb-1">No notifications yet</p>
             <p className="text-zinc-500 text-sm max-w-[260px]">
-              Likes, unlocks, and message requests will show up here.
+              Follows, paid unlocks, likes, and message requests will show up here.
             </p>
           </motion.div>
         )}

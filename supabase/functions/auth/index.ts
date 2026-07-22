@@ -1431,12 +1431,22 @@ const handlePublicFollow = async (req: Request) => {
   }
   const following = await toggleRes.json().catch(() => false)
   if (following === true) {
+    await createNotification({
+      user_id: creator.id,
+      actor_id: user.id,
+      type: 'follow',
+    })
     // Email only on new follow, never on unfollow. Uses creator signup email.
     notifyCreatorByEmail({
       creatorId: creator.id,
       actorId: user.id,
       kind: 'follow',
     }).catch(() => {})
+  } else {
+    await fetch(
+      `${SUPABASE_URL}/rest/v1/notifications?user_id=eq.${creator.id}&actor_id=eq.${user.id}&type=eq.follow`,
+      { method: 'DELETE', headers: { ...authHeaders(true) } },
+    ).catch(() => {})
   }
   return jsonResponse({ following: following === true }, 200, {}, [], origin)
 }
@@ -2031,7 +2041,7 @@ const fetchPostByPublicId = async (publicId: string) => {
 const createNotification = async (n: {
   user_id: string
   actor_id: string
-  type: 'like' | 'purchase' | 'request' | 'accept'
+  type: 'like' | 'purchase' | 'request' | 'accept' | 'follow'
   post_id?: string
   post_public_id?: string
   conversation_id?: string
