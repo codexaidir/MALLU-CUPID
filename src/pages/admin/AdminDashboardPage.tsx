@@ -3,18 +3,19 @@ import { Navigate, useNavigate, useParams } from "react-router-dom";
 import {
   LayoutDashboard, Users, Image, LifeBuoy, Flag, Wallet, LogOut, Menu, X,
   Loader2, Trash2, CheckCircle2, XCircle, RefreshCw, Eye, IndianRupee,
-  BadgeIndianRupee, CreditCard,
+  BadgeIndianRupee, CreditCard, BadgeCheck,
 } from "lucide-react";
 import { useAuth } from "../../lib/useAuth";
 import {
   type AdminTab, type AdminStats, type AdminUserRow, type AdminUserDetail,
   type AdminPostRow, type AdminPostView, type AdminTicketRow,
   type AdminPostReportRow, type AdminUserReportRow, type AdminWithdrawalRow,
-  type AdminPaymentRow, type AdminSettlementRow,
+  type AdminPaymentRow, type AdminSettlementRow, type AdminVerificationRow,
   getAdminStats, getAdminUsers, getAdminUserDetail, getAdminPosts, getAdminPostView,
   adminDeletePost, getAdminTickets, adminUpdateTicket, getAdminPostReports,
   getAdminUserReports, getAdminWithdrawals, adminProcessWithdrawal,
   adminCompleteWithdrawal, getAdminPayments, getAdminSettlements,
+  getAdminVerifications, getAdminVerificationDetail, adminUpdateVerification,
 } from "../../lib/admin";
 import { BrandLogo } from "../../components/BrandMark";
 
@@ -22,6 +23,7 @@ const TABS: { id: AdminTab; label: string; icon: React.ElementType }[] = [
   { id: "overview", label: "Overview", icon: LayoutDashboard },
   { id: "users", label: "Users", icon: Users },
   { id: "posts", label: "Posts", icon: Image },
+  { id: "verification", label: "Verification", icon: BadgeCheck },
   { id: "payments", label: "Wallet & Payments", icon: CreditCard },
   { id: "settlements", label: "Creator Settlements", icon: BadgeIndianRupee },
   { id: "withdrawals", label: "Withdrawals", icon: Wallet },
@@ -62,6 +64,9 @@ export default function AdminDashboardPage() {
   const [withdrawals, setWithdrawals] = useState<AdminWithdrawalRow[]>([]);
   const [payments, setPayments] = useState<AdminPaymentRow[]>([]);
   const [settlements, setSettlements] = useState<AdminSettlementRow[]>([]);
+  const [verifications, setVerifications] = useState<AdminVerificationRow[]>([]);
+  const [verificationView, setVerificationView] = useState<AdminVerificationRow | null>(null);
+  const [verificationNote, setVerificationNote] = useState("");
 
   const [replyDrafts, setReplyDrafts] = useState<Record<string, string>>({});
   const [statusDrafts, setStatusDrafts] = useState<Record<string, AdminTicketRow["status"]>>({});
@@ -126,6 +131,10 @@ export default function AdminDashboardPage() {
         const r = await getAdminWithdrawals();
         if (r.error) setError(r.error);
         else setWithdrawals(r.withdrawals || []);
+      } else if (active === "verification") {
+        const r = await getAdminVerifications();
+        if (r.error) setError(r.error);
+        else setVerifications(r.verifications || []);
       }
     } finally {
       setBusy(false);
@@ -422,6 +431,52 @@ export default function AdminDashboardPage() {
                 </div>
               ))}
               {!posts.length && !busy && <p className="text-zinc-500 text-center py-12">No posts yet.</p>}
+            </div>
+          )}
+
+          {tab === "verification" && (
+            <div className="space-y-3">
+              <p className="text-sm text-zinc-400 mb-2">
+                Review creator government ID submissions. Suspend badges that do not meet criteria; restore when resolved.
+              </p>
+              {verifications.map((v) => (
+                <div key={v.id} className="bg-zinc-900 border border-zinc-800 rounded-2xl p-4">
+                  <div className="flex flex-wrap items-start justify-between gap-3">
+                    <div className="flex gap-3 min-w-0 flex-1">
+                      <Avatar url={v.avatar_url} name={v.username || v.legal_full_name} />
+                      <div className="min-w-0">
+                        <p className="font-semibold text-white truncate">@{v.username || "creator"}</p>
+                        <p className="text-sm text-zinc-300">{v.legal_full_name}</p>
+                        <p className="text-xs text-zinc-500 mt-1">
+                          DOB {v.date_of_birth} · ID {v.public_id} · {fmtDate(v.submitted_at)}
+                        </p>
+                        <span className={`inline-block mt-2 px-2.5 py-1 rounded-full text-xs font-bold ${
+                          v.badge_active ? "bg-sky-500/15 text-sky-300" : "bg-amber-500/15 text-amber-300"
+                        }`}>
+                          {v.badge_active ? "Badge active" : "Suspended"}
+                        </span>
+                      </div>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={async () => {
+                        setBusy(true);
+                        const r = await getAdminVerificationDetail(v.id);
+                        setBusy(false);
+                        if (r.error) setError(r.error);
+                        else {
+                          setVerificationView(r.verification || null);
+                          setVerificationNote(r.verification?.admin_note || "");
+                        }
+                      }}
+                      className="flex items-center gap-1.5 px-3 py-2 rounded-xl bg-zinc-800 text-zinc-200 text-sm font-semibold hover:bg-zinc-700"
+                    >
+                      <Eye className="w-4 h-4" /> Review
+                    </button>
+                  </div>
+                </div>
+              ))}
+              {!verifications.length && !busy && <p className="text-zinc-500 text-center py-12">No verification submissions yet.</p>}
             </div>
           )}
 
@@ -728,6 +783,92 @@ export default function AdminDashboardPage() {
                 ) : null}
               </div>
             )}
+          </div>
+        </div>
+      )}
+
+      {verificationView && (
+        <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center p-4 bg-black/70" onClick={() => setVerificationView(null)}>
+          <div className="w-full max-w-lg bg-zinc-900 border border-zinc-800 rounded-3xl p-5 space-y-4 max-h-[90vh] overflow-y-auto" onClick={(e) => e.stopPropagation()}>
+            <div className="flex items-start justify-between gap-3">
+              <div>
+                <p className="font-bold text-white text-lg">@{verificationView.username}</p>
+                <p className="text-sm text-zinc-400">{verificationView.legal_full_name}</p>
+                <p className="text-xs text-zinc-500 mt-1">
+                  DOB {verificationView.date_of_birth} · {verificationView.public_id}
+                </p>
+              </div>
+              <button onClick={() => setVerificationView(null)} className="p-2 rounded-lg hover:bg-zinc-800"><X className="w-5 h-5" /></button>
+            </div>
+
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <p className="text-xs text-zinc-500 mb-1">ID front</p>
+                {verificationView.id_front_url ? (
+                  <a href={verificationView.id_front_url} target="_blank" rel="noreferrer" className="block rounded-xl overflow-hidden border border-zinc-800 bg-zinc-950 aspect-[4/3]">
+                    <img src={verificationView.id_front_url} alt="ID front" className="w-full h-full object-cover" />
+                  </a>
+                ) : (
+                  <p className="text-sm text-zinc-500">Unavailable</p>
+                )}
+              </div>
+              <div>
+                <p className="text-xs text-zinc-500 mb-1">ID back</p>
+                {verificationView.id_back_url ? (
+                  <a href={verificationView.id_back_url} target="_blank" rel="noreferrer" className="block rounded-xl overflow-hidden border border-zinc-800 bg-zinc-950 aspect-[4/3]">
+                    <img src={verificationView.id_back_url} alt="ID back" className="w-full h-full object-cover" />
+                  </a>
+                ) : (
+                  <p className="text-sm text-zinc-500">Unavailable</p>
+                )}
+              </div>
+            </div>
+
+            <textarea
+              value={verificationNote}
+              onChange={(e) => setVerificationNote(e.target.value)}
+              placeholder="Admin note (optional)"
+              rows={2}
+              className="w-full rounded-xl bg-zinc-950 border border-zinc-700 px-3 py-2 text-sm text-white"
+            />
+
+            <div className="flex flex-wrap gap-2">
+              {verificationView.badge_active ? (
+                <button
+                  type="button"
+                  onClick={async () => {
+                    setBusy(true);
+                    const r = await adminUpdateVerification(verificationView.id, "suspend", verificationNote);
+                    setBusy(false);
+                    if (r.error) setError(r.error);
+                    else {
+                      setVerificationView(null);
+                      loadTab("verification");
+                    }
+                  }}
+                  className="flex-1 px-4 py-2.5 rounded-xl bg-red-500/15 text-red-300 font-bold text-sm flex items-center justify-center gap-1"
+                >
+                  <XCircle className="w-4 h-4" /> Suspend badge
+                </button>
+              ) : (
+                <button
+                  type="button"
+                  onClick={async () => {
+                    setBusy(true);
+                    const r = await adminUpdateVerification(verificationView.id, "restore", verificationNote);
+                    setBusy(false);
+                    if (r.error) setError(r.error);
+                    else {
+                      setVerificationView(null);
+                      loadTab("verification");
+                    }
+                  }}
+                  className="flex-1 px-4 py-2.5 rounded-xl bg-emerald-500 text-zinc-950 font-bold text-sm flex items-center justify-center gap-1"
+                >
+                  <CheckCircle2 className="w-4 h-4" /> Restore badge
+                </button>
+              )}
+            </div>
           </div>
         </div>
       )}

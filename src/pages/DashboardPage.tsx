@@ -4,6 +4,7 @@ import { Link, useNavigate, useParams } from "react-router-dom";
 import { LogOut, LayoutDashboard, Users, CreditCard, Heart, Grid, PlaySquare, Play, Menu, X, Bell, ShieldCheck, BadgeCheck, Wallet, MoreVertical, Edit2, Trash2, Plus, Copy, Check, Inbox, Link2, ImagePlus, Radio, TrendingUp, Sparkles, UploadCloud, FileImage, FileVideo, Eye, LockKeyhole, Video, Layers, HelpCircle } from "lucide-react";
 import { getProfile, publicProfileSlug, type CreatorPost, type Profile, type ProfileStats, type ExclusiveRoom } from "../lib/auth";
 import { ExclusiveHighlightsRow } from "../components/ExclusiveHighlightsRow";
+import { VerifiedBadge } from "../components/VerifiedBadge";
 import { useAuth } from "../lib/useAuth";
 import { BrandIcon } from "../components/BrandMark";
 
@@ -195,8 +196,9 @@ export default function DashboardPage() {
                   </div>
                   
                   <div className="flex flex-col flex-grow">
-                    <div className="flex items-center gap-3 mb-4">
+                    <div className="flex items-center gap-2 mb-4">
                       <h2 className="text-xl sm:text-2xl font-bold text-zinc-900">{profile?.username || ''}</h2>
+                      <VerifiedBadge verified={profile?.is_verified} />
                     </div>
 
                     {/* Stats Desktop */}
@@ -226,6 +228,18 @@ export default function DashboardPage() {
                 </div>
 
                 {/* Action Buttons */}
+                {!profile?.is_verified && (
+                  <div className="mb-4 w-full rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">
+                    Complete identity verification to publish posts and create Exclusive Rooms.{" "}
+                    <button
+                      type="button"
+                      onClick={() => navigate(`${base}/verification`)}
+                      className="font-semibold text-rose-600 underline underline-offset-2"
+                    >
+                      Verify now
+                    </button>
+                  </div>
+                )}
                 <div className="flex gap-2 w-full">
                   <button 
                     onClick={() => navigate(`${base}/edit-profile`)}
@@ -242,7 +256,13 @@ export default function DashboardPage() {
                   {/* New post (desktop) */}
                   <div className="relative hidden md:block">
                     <button
-                      onClick={() => setIsNewPostMenuOpen((open) => !open)}
+                      onClick={() => {
+                        if (!profile?.is_verified) {
+                          navigate(`${base}/verification`);
+                          return;
+                        }
+                        setIsNewPostMenuOpen((open) => !open);
+                      }}
                       className="py-1.5 px-4 bg-rose-500 hover:bg-rose-600 text-white font-semibold rounded-lg text-sm transition-colors flex items-center gap-1.5 shadow-md shadow-rose-500/20"
                     >
                       <Plus className={`w-4 h-4 transition-transform ${isNewPostMenuOpen ? 'rotate-45' : ''}`} />
@@ -291,7 +311,13 @@ export default function DashboardPage() {
                 <ExclusiveHighlightsRow
                   rooms={rooms}
                   canManage
-                  onAddRoom={() => navigate(`${base}/exclusive/new`)}
+                  onAddRoom={() => {
+                    if (!profile?.is_verified) {
+                      navigate(`${base}/verification`);
+                      return;
+                    }
+                    navigate(`${base}/exclusive/new`);
+                  }}
                   onOpenRoom={(room) => navigate(`${base}/exclusive/${room.id}`)}
                 />
               </div>

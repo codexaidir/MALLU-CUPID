@@ -8,7 +8,8 @@ export type AdminTab =
   | "settlements"
   | "help"
   | "reports"
-  | "withdrawals";
+  | "withdrawals"
+  | "verification";
 
 export interface AdminStats {
   users: number;
@@ -242,4 +243,44 @@ export async function getAdminPayments(): Promise<{ payments?: AdminPaymentRow[]
 
 export async function getAdminSettlements(): Promise<{ settlements?: AdminSettlementRow[]; error?: string }> {
   return apiGet("/admin/settlements");
+}
+
+export interface AdminVerificationRow {
+  id: string;
+  user_id: string;
+  public_id: string;
+  legal_full_name: string;
+  date_of_birth: string;
+  status: "verified" | "suspended";
+  badge_active: boolean;
+  username: string;
+  email: string;
+  avatar_url: string;
+  submitted_at: string;
+  reviewed_at: string | null;
+  admin_note: string;
+  id_front_url?: string;
+  id_back_url?: string;
+}
+
+export async function getAdminVerifications(): Promise<{
+  verifications?: AdminVerificationRow[];
+  error?: string;
+}> {
+  return apiGet("/admin/verifications");
+}
+
+export async function getAdminVerificationDetail(id: string): Promise<{
+  verification?: AdminVerificationRow;
+  error?: string;
+}> {
+  return apiGet(`/admin/verification?id=${encodeURIComponent(id)}`);
+}
+
+export async function adminUpdateVerification(
+  id: string,
+  action: "suspend" | "restore",
+  note = "",
+): Promise<{ verification?: AdminVerificationRow; error?: string }> {
+  return apiPost("/admin/verifications/update", { id, action, note });
 }

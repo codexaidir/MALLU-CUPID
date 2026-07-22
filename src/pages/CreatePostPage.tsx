@@ -1,4 +1,4 @@
-import React, { useMemo, useRef, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { motion, AnimatePresence } from "motion/react";
 import Cropper, { type Area } from "react-easy-crop";
@@ -14,7 +14,7 @@ import {
   AlertCircle,
   Sparkles,
 } from "lucide-react";
-import { createPost, createPostUploadUrls, uploadFileWithProgress } from "../lib/auth";
+import { createPost, createPostUploadUrls, getCreatorVerification, uploadFileWithProgress } from "../lib/auth";
 
 const IMAGE_TYPES = ["image/jpeg", "image/jpg", "image/png"];
 const MAX_IMAGE_SIZE = 50 * 1024 * 1024;
@@ -86,6 +86,18 @@ export default function CreatePostPage() {
 
   const [step, setStep] = useState<Step>("select");
   const [error, setError] = useState("");
+  const [gateLoading, setGateLoading] = useState(true);
+
+  useEffect(() => {
+    (async () => {
+      const res = await getCreatorVerification();
+      if (!res.verification?.badge_active) {
+        navigate(`${profilePath}/verification`, { replace: true });
+        return;
+      }
+      setGateLoading(false);
+    })();
+  }, [navigate, profilePath]);
 
   const [photos, setPhotos] = useState<PhotoItem[]>([]);
   const [currentIndex, setCurrentIndex] = useState(0);
@@ -241,6 +253,14 @@ export default function CreatePostPage() {
   };
 
   const currentPhoto = photos[currentIndex];
+
+  if (gateLoading) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-zinc-50">
+        <div className="w-8 h-8 rounded-full border-2 border-rose-500 border-t-transparent animate-spin" />
+      </div>
+    );
+  }
 
   return (
     <div className="min-h-screen bg-zinc-50 flex flex-col md:items-center md:justify-center md:p-4 pt-14 pb-14 md:pt-4 md:pb-4">

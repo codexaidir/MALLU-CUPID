@@ -1,4 +1,4 @@
-import React, { useRef, useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import { useNavigate, useParams, useSearchParams } from "react-router-dom";
 import {
   ArrowLeft, ImagePlus, Video, AlertCircle, Loader2, CheckCircle2,
@@ -6,6 +6,7 @@ import {
 import {
   createExclusiveRoomPost,
   createExclusiveRoomUploadUrls,
+  getCreatorVerification,
   uploadFileWithProgress,
 } from "../lib/auth";
 
@@ -20,7 +21,9 @@ export default function ExclusiveRoomCreatePostPage() {
   const navigate = useNavigate();
   const mediaType = params.get("type") === "video" ? "video" : "photo";
   const roomPath = `/${username}/exclusive/${roomId}`;
+  const base = `/${username}`;
 
+  const [gateLoading, setGateLoading] = useState(true);
   const [files, setFiles] = useState<File[]>([]);
   const [previews, setPreviews] = useState<string[]>([]);
   const [caption, setCaption] = useState("");
@@ -28,6 +31,17 @@ export default function ExclusiveRoomCreatePostPage() {
   const [uploading, setUploading] = useState(false);
   const [percent, setPercent] = useState(0);
   const [done, setDone] = useState(false);
+
+  useEffect(() => {
+    (async () => {
+      const gate = await getCreatorVerification();
+      if (!gate.verification?.badge_active) {
+        navigate(`${base}/verification`, { replace: true });
+        return;
+      }
+      setGateLoading(false);
+    })();
+  }, [base, navigate]);
   const inputRef = useRef<HTMLInputElement>(null);
 
   const onSelect = (list: FileList | null) => {
@@ -110,6 +124,14 @@ export default function ExclusiveRoomCreatePostPage() {
       setUploading(false);
     }
   };
+
+  if (gateLoading) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-zinc-50">
+        <Loader2 className="w-7 h-7 animate-spin text-rose-500" />
+      </div>
+    );
+  }
 
   return (
     <div className="min-h-screen bg-zinc-50 pt-14 pb-20">

@@ -3,6 +3,7 @@ import { useNavigate, useParams } from "react-router-dom";
 import { ArrowLeft, Crown, Loader2, AlertCircle, ImagePlus } from "lucide-react";
 import {
   createExclusiveRoom,
+  getCreatorVerification,
   getExclusiveRooms,
   updateExclusiveRoom,
   uploadExclusiveThumbnail,
@@ -20,14 +21,24 @@ export default function ExclusiveRoomFormPage() {
   const [thumbPreview, setThumbPreview] = useState("");
   const [thumbFile, setThumbFile] = useState<File | null>(null);
   const [existing, setExisting] = useState<ExclusiveRoom | null>(null);
-  const [loading, setLoading] = useState(isEdit);
+  const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
   const fileRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
-    if (!isEdit || !roomId) return;
     (async () => {
+      if (!isEdit) {
+        const gate = await getCreatorVerification();
+        if (!gate.verification?.badge_active) {
+          navigate(`${base}/verification`, { replace: true });
+          return;
+        }
+      }
+      if (!isEdit || !roomId) {
+        setLoading(false);
+        return;
+      }
       const res = await getExclusiveRooms();
       setLoading(false);
       if (res.error) {
@@ -44,7 +55,7 @@ export default function ExclusiveRoomFormPage() {
       setFee(String(room.entry_fee));
       setThumbPreview(room.thumbnail_url || "");
     })();
-  }, [isEdit, roomId]);
+  }, [base, isEdit, navigate, roomId]);
 
   const onPickThumb = (file: File | null) => {
     if (!file) return;

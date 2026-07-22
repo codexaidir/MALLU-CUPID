@@ -105,6 +105,9 @@ export interface Profile {
   facebook_url: string;
   gender: 'Prefer not to say' | 'Male' | 'Female' | 'Transgender';
   public_serial: number;
+  is_verified?: boolean;
+  verification_public_id?: string | null;
+  verification_status?: 'unverified' | 'verified' | 'suspended';
 }
 
 /** Public creator page slug for a profile: <username><5-digit serial>. */
@@ -145,6 +148,43 @@ export interface PayoutAccount {
 
 export async function getPayoutAccount(): Promise<{ account?: PayoutAccount | null; error?: string }> {
   return apiGet('/payout-account');
+}
+
+export type CreatorVerificationStatus = {
+  status: 'unverified' | 'verified' | 'suspended';
+  badge_active: boolean;
+  public_id: string | null;
+  legal_full_name?: string | null;
+  date_of_birth?: string | null;
+  submitted_at?: string | null;
+  reviewed_at?: string | null;
+  admin_note?: string | null;
+};
+
+export async function getCreatorVerification(): Promise<{
+  verification?: CreatorVerificationStatus;
+  error?: string;
+}> {
+  return apiGet('/creator-verification');
+}
+
+export async function requestVerificationUploadUrls(
+  files: { side: 'front' | 'back'; content_type: string; size: number }[],
+): Promise<{
+  uploads?: { side: 'front' | 'back'; path: string; upload_url: string; content_type: string }[];
+  error?: string;
+}> {
+  return apiPost('/creator-verification/upload-urls', { files });
+}
+
+export async function submitCreatorVerification(data: {
+  legal_full_name: string;
+  date_of_birth: string;
+  id_front_path: string;
+  id_back_path: string;
+  terms_accepted: boolean;
+}): Promise<{ verification?: CreatorVerificationStatus; error?: string }> {
+  return apiPost('/creator-verification/submit', data);
 }
 
 export async function savePayoutAccount(data: {
@@ -430,6 +470,7 @@ export interface PublicProfileData {
     avatar_url: string;
     bio: string;
     serial: string;
+    is_verified?: boolean;
   };
   stats: { posts: number; followers: number };
   viewer: {

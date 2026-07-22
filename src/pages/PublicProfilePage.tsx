@@ -10,6 +10,7 @@ import {
   type PublicProfileData, type PublicProfilePost,
 } from "../lib/auth";
 import { ExclusiveHighlightsRow } from "../components/ExclusiveHighlightsRow";
+import { VerifiedBadge } from "../components/VerifiedBadge";
 import { useAuth } from "../lib/useAuth";
 import { BRAND_APP_ICON_URL, BRAND_LOGO_URL } from "../lib/brand";
 import { loadRazorpay, type RazorpaySuccess } from "../lib/razorpay";
@@ -438,7 +439,10 @@ export default function PublicProfilePage() {
               <h1 className="mt-4 text-2xl font-semibold text-rose-500">
                 Hi, I'm {data.profile.full_name || data.profile.username}
               </h1>
-              <p className="text-sm font-semibold text-zinc-700 mt-1">@{data.profile.username}</p>
+              <p className="text-sm font-semibold text-zinc-700 mt-1 inline-flex items-center justify-center gap-1.5">
+                @{data.profile.username}
+                <VerifiedBadge verified={data.profile.is_verified} size="sm" />
+              </p>
               <div className="flex justify-center gap-10 mt-4">
                 <div>
                   <strong>{data.stats.posts}</strong>

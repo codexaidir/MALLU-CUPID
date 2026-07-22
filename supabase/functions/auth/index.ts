@@ -1265,6 +1265,86 @@ const generatePostPublicId = () => {
   return Array.from(random, (byte) => alphabet[byte % alphabet.length]).join('')
 }
 
+const VERIFICATION_DOCS_BUCKET = 'verification-docs'
+const VERIFICATION_ID_TYPES = ['image/jpeg', 'image/jpg', 'image/png', 'image/webp']
+const MAX_VERIFICATION_ID_SIZE = 10 * 1024 * 1024
+
+const creatorHasVerifiedBadge = async (userId: string): Promise<boolean> => {
+  const res = await fetch(`${SUPABASE_URL}/rest/v1/rpc/creator_has_verified_badge`, {
+    method: 'POST',
+    headers: { ...authHeaders(true) },
+    body: JSON.stringify({ p_user_id: userId }),
+  })
+  if (!res.ok) {
+    // Fallback to profiles columns if RPC is unavailable
+    const p = await fetch(
+      `${SUPABASE_URL}/rest/v1/profiles?id=eq.${userId}&select=is_verified,verification_status&limit=1`,
+      { headers: { ...authHeaders(true) } },
+    )
+    const rows = p.ok ? await p.json().catch(() => []) : []
+    const row = Array.isArray(rows) && rows.length ? rows[0] : null
+    return Boolean(row?.is_verified && row?.verification_status === 'verified')
+  }
+  const value = await res.json().catch(() => false)
+  return value === true
+}
+
+const verificationRequiredResponse = (origin: string | null) =>
+  jsonResponse(
+    {
+      error: 'Identity verification required before posting or creating Exclusive Rooms',
+      code: 'verification_required',
+    },
+    403,
+    {},
+    [],
+    origin,
+  )
+
+const isAtLeast18 = (dobIso: string): boolean => {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(dobIso)
+  if (!m) return false
+  const dob = new Date(Date.UTC(Number(m[1]), Number(m[2]) - 1, Number(m[3])))
+  if (Number.isNaN(dob.getTime())) return false
+  const now = new Date()
+  const cutoff = new Date(Date.UTC(now.getUTCFullYear() - 18, now.getUTCMonth(), now.getUTCDate()))
+  return dob.getTime() <= cutoff.getTime()
+}
+
+const mapVerificationStatus = (row: Record<string, unknown> | null, profile?: Record<string, unknown> | null) => {
+  const status = String(row?.status || profile?.verification_status || 'unverified')
+  const badgeActive = status === 'verified' && (profile?.is_verified === true || row?.status === 'verified')
+  return {
+    status: status === 'verified' || status === 'suspended' ? status : 'unverified',
+    badge_active: badgeActive && status === 'verified',
+    public_id: (row?.public_id as string) || (profile?.verification_public_id as string) || null,
+    legal_full_name: (row?.legal_full_name as string) || null,
+    date_of_birth: (row?.date_of_birth as string) || null,
+    submitted_at: (row?.submitted_at as string) || null,
+    reviewed_at: (row?.reviewed_at as string) || null,
+    admin_note: (row?.admin_note as string) || null,
+  }
+}
+
+const signVerificationPaths = async (paths: string[], expiresIn = 300): Promise<Record<string, string>> => {
+  const unique = [...new Set(paths.filter(Boolean))]
+  if (!unique.length) return {}
+  const res = await fetch(`${SUPABASE_URL}/storage/v1/object/sign/${VERIFICATION_DOCS_BUCKET}`, {
+    method: 'POST',
+    headers: { ...authHeaders(true) },
+    body: JSON.stringify({ paths: unique, expiresIn }),
+  })
+  if (!res.ok) return {}
+  const body = await res.json().catch(() => [])
+  const out: Record<string, string> = {}
+  for (const item of Array.isArray(body) ? body : []) {
+    if (item?.path && item?.signedURL) {
+      out[item.path] = `${SUPABASE_URL}/storage/v1${item.signedURL}`
+    }
+  }
+  return out
+}
+
 const mediaExtension = (contentType: string) => {
   if (contentType === 'image/png') return 'png'
   if (contentType === 'image/jpeg' || contentType === 'image/jpg') return 'jpg'
@@ -1337,7 +1417,7 @@ const handlePublicProfile = async (req: Request, url: URL) => {
 
   // Serial is the unique key; the username prefix must match exactly
   const profileRes = await fetch(
-    `${SUPABASE_URL}/rest/v1/profiles?public_serial=eq.${serial}&select=id,username,full_name,bio,avatar_url,public_serial&limit=1`,
+    `${SUPABASE_URL}/rest/v1/profiles?public_serial=eq.${serial}&select=id,username,full_name,bio,avatar_url,public_serial,is_verified,verification_status&limit=1`,
     { headers: { ...authHeaders(true) } },
   )
   if (!profileRes.ok) return jsonResponse({ error: 'Failed to load creator' }, 500, {}, [], origin)
@@ -1414,6 +1494,7 @@ const handlePublicProfile = async (req: Request, url: URL) => {
       avatar_url: profile.avatar_url || '',
       bio: profile.bio || '',
       serial: String(profile.public_serial).padStart(5, '0'),
+      is_verified: profile.is_verified === true && profile.verification_status === 'verified',
     },
     stats: {
       posts: postCountRes.ok ? countFrom(postCountRes) : posts.length,
@@ -1486,6 +1567,7 @@ const handlePostUploadUrls = async (req: Request) => {
   const origin = req.headers.get('origin')
   const user = await requireRole(req, 'creator')
   if (!user) return jsonResponse({ error: 'Unauthorized' }, 401, {}, [], origin)
+  if (!(await creatorHasVerifiedBadge(user.id))) return verificationRequiredResponse(origin)
 
   const body = await parseJson(req)
   const mediaType = body.media_type === 'video' ? 'video' : body.media_type === 'image' ? 'image' : null
@@ -1539,6 +1621,7 @@ const handleCreatePost = async (req: Request) => {
   const origin = req.headers.get('origin')
   const user = await requireRole(req, 'creator')
   if (!user) return jsonResponse({ error: 'Unauthorized' }, 401, {}, [], origin)
+  if (!(await creatorHasVerifiedBadge(user.id))) return verificationRequiredResponse(origin)
 
   const body = await parseJson(req)
   const publicId = typeof body.public_id === 'string' ? body.public_id : ''
@@ -1611,7 +1694,7 @@ const handleGetProfile = async (req: Request) => {
 
   const [res, postsCountRes, followersCountRes, followingCountRes, postsRes] = await Promise.all([
     fetch(
-      `${SUPABASE_URL}/rest/v1/profiles?id=eq.${user.id}&select=id,username,full_name,bio,avatar_url,location,instagram_url,facebook_url,gender,public_serial&limit=1`,
+      `${SUPABASE_URL}/rest/v1/profiles?id=eq.${user.id}&select=id,username,full_name,bio,avatar_url,location,instagram_url,facebook_url,gender,public_serial,is_verified,verification_public_id,verification_status&limit=1`,
       { headers: { ...authHeaders(true) } },
     ),
     fetch(`${SUPABASE_URL}/rest/v1/posts?creator_id=eq.${user.id}&select=id`, {
@@ -4617,6 +4700,7 @@ const handleCreateExclusiveRoom = async (req: Request) => {
   const origin = req.headers.get('origin')
   const user = await requireRole(req, 'creator')
   if (!user) return jsonResponse({ error: 'Unauthorized' }, 401, {}, [], origin)
+  if (!(await creatorHasVerifiedBadge(user.id))) return verificationRequiredResponse(origin)
 
   const body = await parseJson(req)
   const name = typeof body.name === 'string' ? body.name.trim() : ''
@@ -4814,6 +4898,7 @@ const handleExclusiveRoomUploadUrls = async (req: Request) => {
   const origin = req.headers.get('origin')
   const user = await requireRole(req, 'creator')
   if (!user) return jsonResponse({ error: 'Unauthorized' }, 401, {}, [], origin)
+  if (!(await creatorHasVerifiedBadge(user.id))) return verificationRequiredResponse(origin)
   const body = await parseJson(req)
   const roomId = typeof body.room_id === 'string' ? body.room_id.trim() : ''
   const room = await fetchExclusiveRoomById(roomId)
@@ -4865,6 +4950,7 @@ const handleCreateExclusiveRoomPost = async (req: Request) => {
   const origin = req.headers.get('origin')
   const user = await requireRole(req, 'creator')
   if (!user) return jsonResponse({ error: 'Unauthorized' }, 401, {}, [], origin)
+  if (!(await creatorHasVerifiedBadge(user.id))) return verificationRequiredResponse(origin)
   const body = await parseJson(req)
   const roomId = typeof body.room_id === 'string' ? body.room_id.trim() : ''
   const room = await fetchExclusiveRoomById(roomId)
@@ -5205,6 +5291,361 @@ const handleDeleteExclusiveRoom = async (req: Request) => {
   return jsonResponse({ status: 'deleted' }, 200, {}, [], origin)
 }
 
+const handleGetCreatorVerification = async (req: Request) => {
+  const origin = req.headers.get('origin')
+  const user = await requireRole(req, 'creator')
+  if (!user) return jsonResponse({ error: 'Unauthorized' }, 401, {}, [], origin)
+
+  const [profileRes, verRes] = await Promise.all([
+    fetch(
+      `${SUPABASE_URL}/rest/v1/profiles?id=eq.${user.id}&select=is_verified,verification_public_id,verification_status&limit=1`,
+      { headers: { ...authHeaders(true) } },
+    ),
+    fetch(
+      `${SUPABASE_URL}/rest/v1/creator_verifications?user_id=eq.${user.id}&select=*&limit=1`,
+      { headers: { ...authHeaders(true) } },
+    ),
+  ])
+  const profiles = profileRes.ok ? await profileRes.json().catch(() => []) : []
+  const rows = verRes.ok ? await verRes.json().catch(() => []) : []
+  const profile = Array.isArray(profiles) && profiles.length ? profiles[0] : null
+  const row = Array.isArray(rows) && rows.length ? rows[0] : null
+  return jsonResponse({ verification: mapVerificationStatus(row, profile) }, 200, {}, [], origin)
+}
+
+const handleCreatorVerificationUploadUrls = async (req: Request) => {
+  const origin = req.headers.get('origin')
+  const user = await requireRole(req, 'creator')
+  if (!user) return jsonResponse({ error: 'Unauthorized' }, 401, {}, [], origin)
+
+  const body = await parseJson(req)
+  const files = Array.isArray(body.files) ? body.files : []
+  if (files.length !== 2) {
+    return jsonResponse({ error: 'Both ID front and back uploads are required' }, 400, {}, [], origin)
+  }
+
+  const sides = new Set<string>()
+  const uploads: Array<{ side: string; path: string; upload_url: string; content_type: string }> = []
+
+  for (const file of files) {
+    const side = file?.side === 'back' ? 'back' : file?.side === 'front' ? 'front' : ''
+    if (!side) return jsonResponse({ error: 'Each file must specify side front or back' }, 400, {}, [], origin)
+    if (sides.has(side)) return jsonResponse({ error: 'Duplicate ID side upload' }, 400, {}, [], origin)
+    sides.add(side)
+    const contentType = typeof file?.content_type === 'string' ? file.content_type : ''
+    const size = Number(file?.size)
+    if (!VERIFICATION_ID_TYPES.includes(contentType)) {
+      return jsonResponse({ error: 'ID images must be JPG, PNG, or WebP' }, 400, {}, [], origin)
+    }
+    if (!Number.isFinite(size) || size <= 0 || size > MAX_VERIFICATION_ID_SIZE) {
+      return jsonResponse({ error: 'Each ID image must be 10MB or smaller' }, 400, {}, [], origin)
+    }
+    const ext = mediaExtension(contentType)
+    const path = `${user.id}/${side}.${ext}`
+    const signRes = await fetch(
+      `${SUPABASE_URL}/storage/v1/object/upload/sign/${VERIFICATION_DOCS_BUCKET}/${path}`,
+      {
+        method: 'POST',
+        headers: { ...authHeaders(true) },
+        body: JSON.stringify({}),
+      },
+    )
+    if (!signRes.ok) {
+      console.error('Verification upload sign failed:', await signRes.text().catch(() => ''))
+      return jsonResponse({ error: 'Failed to prepare ID upload' }, 500, {}, [], origin)
+    }
+    const signBody = await signRes.json().catch(() => ({}))
+    if (!signBody?.url) return jsonResponse({ error: 'Failed to prepare ID upload' }, 500, {}, [], origin)
+    uploads.push({
+      side,
+      path,
+      upload_url: `${SUPABASE_URL}/storage/v1${signBody.url}`,
+      content_type: contentType,
+    })
+  }
+
+  if (!sides.has('front') || !sides.has('back')) {
+    return jsonResponse({ error: 'Both ID front and back uploads are required' }, 400, {}, [], origin)
+  }
+
+  return jsonResponse({ uploads }, 200, {}, [], origin)
+}
+
+const handleSubmitCreatorVerification = async (req: Request) => {
+  const origin = req.headers.get('origin')
+  const user = await requireRole(req, 'creator')
+  if (!user) return jsonResponse({ error: 'Unauthorized' }, 401, {}, [], origin)
+
+  const body = await parseJson(req)
+  const legalName = typeof body.legal_full_name === 'string' ? body.legal_full_name.trim() : ''
+  const dob = typeof body.date_of_birth === 'string' ? body.date_of_birth.trim() : ''
+  const frontPath = typeof body.id_front_path === 'string' ? body.id_front_path.trim() : ''
+  const backPath = typeof body.id_back_path === 'string' ? body.id_back_path.trim() : ''
+  const termsAccepted = body.terms_accepted === true
+
+  if (legalName.length < 2 || legalName.length > 120) {
+    return jsonResponse({ error: 'Enter your full legal name as on your government ID' }, 400, {}, [], origin)
+  }
+  if (!isAtLeast18(dob)) {
+    return jsonResponse({ error: 'You must be at least 18 years old to get a verification badge' }, 400, {}, [], origin)
+  }
+  if (!termsAccepted) {
+    return jsonResponse({ error: 'You must accept the Terms of Service and Privacy Policy' }, 400, {}, [], origin)
+  }
+  if (!frontPath.startsWith(`${user.id}/`) || !backPath.startsWith(`${user.id}/`)) {
+    return jsonResponse({ error: 'Invalid ID document paths' }, 400, {}, [], origin)
+  }
+
+  const existingProfile = await fetch(
+    `${SUPABASE_URL}/rest/v1/profiles?id=eq.${user.id}&select=is_verified,verification_status&limit=1`,
+    { headers: { ...authHeaders(true) } },
+  )
+  const existingRows = existingProfile.ok ? await existingProfile.json().catch(() => []) : []
+  const existing = Array.isArray(existingRows) && existingRows.length ? existingRows[0] : null
+  if (existing?.is_verified === true && existing?.verification_status === 'verified') {
+    return jsonResponse({ error: 'You are already verified' }, 400, {}, [], origin)
+  }
+
+  // Confirm both files exist in storage
+  const listRes = await fetch(`${SUPABASE_URL}/storage/v1/object/list/${VERIFICATION_DOCS_BUCKET}`, {
+    method: 'POST',
+    headers: { ...authHeaders(true) },
+    body: JSON.stringify({ prefix: `${user.id}/`, limit: 50 }),
+  })
+  if (!listRes.ok) return jsonResponse({ error: 'Failed to verify ID uploads' }, 500, {}, [], origin)
+  const objects = await listRes.json().catch(() => [])
+  const names = new Set(
+    (Array.isArray(objects) ? objects : []).map((obj: { name?: string }) => `${user.id}/${obj?.name || ''}`),
+  )
+  if (!names.has(frontPath) || !names.has(backPath)) {
+    return jsonResponse({ error: 'ID front and back must be uploaded before submit' }, 400, {}, [], origin)
+  }
+
+  const existingVer = await fetch(
+    `${SUPABASE_URL}/rest/v1/creator_verifications?user_id=eq.${user.id}&select=id,public_id&limit=1`,
+    { headers: { ...authHeaders(true) } },
+  )
+  const existingVerRows = existingVer.ok ? await existingVer.json().catch(() => []) : []
+  const prior = Array.isArray(existingVerRows) && existingVerRows.length ? existingVerRows[0] : null
+  const publicId = prior?.public_id && /^[A-Za-z0-9]{12}$/.test(prior.public_id)
+    ? prior.public_id
+    : generatePostPublicId()
+  const now = new Date().toISOString()
+  const payload = {
+    user_id: user.id,
+    public_id: publicId,
+    legal_full_name: legalName,
+    date_of_birth: dob,
+    id_front_path: frontPath,
+    id_back_path: backPath,
+    terms_accepted_at: now,
+    status: 'verified',
+    admin_note: '',
+    reviewed_at: null,
+    reviewed_by: null,
+    submitted_at: now,
+    updated_at: now,
+  }
+
+  let saved: Record<string, unknown> | null = null
+  if (prior?.id) {
+    const upd = await fetch(
+      `${SUPABASE_URL}/rest/v1/creator_verifications?id=eq.${prior.id}`,
+      {
+        method: 'PATCH',
+        headers: { ...authHeaders(true), Prefer: 'return=representation' },
+        body: JSON.stringify(payload),
+      },
+    )
+    if (!upd.ok) {
+      console.error('Update verification failed:', await upd.text().catch(() => ''))
+      return jsonResponse({ error: 'Failed to save verification' }, 500, {}, [], origin)
+    }
+    const rows = await upd.json().catch(() => [])
+    saved = Array.isArray(rows) && rows.length ? rows[0] : null
+  } else {
+    const ins = await fetch(`${SUPABASE_URL}/rest/v1/creator_verifications`, {
+      method: 'POST',
+      headers: { ...authHeaders(true), Prefer: 'return=representation' },
+      body: JSON.stringify([payload]),
+    })
+    if (!ins.ok) {
+      console.error('Insert verification failed:', await ins.text().catch(() => ''))
+      return jsonResponse({ error: 'Failed to save verification' }, 500, {}, [], origin)
+    }
+    const rows = await ins.json().catch(() => [])
+    saved = Array.isArray(rows) && rows.length ? rows[0] : null
+  }
+  if (!saved) return jsonResponse({ error: 'Failed to save verification' }, 500, {}, [], origin)
+
+  const profileUpd = await fetch(
+    `${SUPABASE_URL}/rest/v1/profiles?id=eq.${user.id}`,
+    {
+      method: 'PATCH',
+      headers: { ...authHeaders(true) },
+      body: JSON.stringify({
+        is_verified: true,
+        verification_public_id: publicId,
+        verification_status: 'verified',
+        updated_at: now,
+      }),
+    },
+  )
+  if (!profileUpd.ok) {
+    console.error('Profile verification flag failed:', await profileUpd.text().catch(() => ''))
+    return jsonResponse({ error: 'Failed to activate verification badge' }, 500, {}, [], origin)
+  }
+
+  return jsonResponse({
+    verification: mapVerificationStatus(saved, {
+      is_verified: true,
+      verification_status: 'verified',
+      verification_public_id: publicId,
+    }),
+  }, 200, {}, [], origin)
+}
+
+const decorateAdminVerification = async (row: Record<string, unknown>, withDocs = false) => {
+  const userId = String(row.user_id || '')
+  const [profileRes, accountRes] = await Promise.all([
+    fetch(
+      `${SUPABASE_URL}/rest/v1/profiles?id=eq.${userId}&select=username,avatar_url,is_verified,verification_status&limit=1`,
+      { headers: { ...authHeaders(true) } },
+    ),
+    fetch(
+      `${SUPABASE_URL}/rest/v1/user_accounts?id=eq.${userId}&select=email,name&limit=1`,
+      { headers: { ...authHeaders(true) } },
+    ),
+  ])
+  const profiles = profileRes.ok ? await profileRes.json().catch(() => []) : []
+  const accounts = accountRes.ok ? await accountRes.json().catch(() => []) : []
+  const profile = Array.isArray(profiles) && profiles.length ? profiles[0] : {}
+  const account = Array.isArray(accounts) && accounts.length ? accounts[0] : {}
+  const status = String(row.status || 'verified')
+  const base = {
+    id: row.id,
+    user_id: userId,
+    public_id: row.public_id,
+    legal_full_name: row.legal_full_name,
+    date_of_birth: row.date_of_birth,
+    status,
+    badge_active: status === 'verified' && profile.is_verified === true,
+    username: profile.username || '',
+    email: account.email || '',
+    avatar_url: profile.avatar_url || '',
+    submitted_at: row.submitted_at,
+    reviewed_at: row.reviewed_at || null,
+    admin_note: row.admin_note || '',
+  }
+  if (!withDocs) return base
+  const signed = await signVerificationPaths(
+    [String(row.id_front_path || ''), String(row.id_back_path || '')],
+    600,
+  )
+  return {
+    ...base,
+    id_front_url: signed[String(row.id_front_path || '')] || '',
+    id_back_url: signed[String(row.id_back_path || '')] || '',
+  }
+}
+
+const handleAdminVerifications = async (req: Request) => {
+  const origin = req.headers.get('origin')
+  const admin = await requireAdmin(req)
+  if (!admin) return jsonResponse({ error: 'Unauthorized' }, 401, {}, [], origin)
+
+  const res = await fetch(
+    `${SUPABASE_URL}/rest/v1/creator_verifications?select=*&order=submitted_at.desc&limit=200`,
+    { headers: { ...authHeaders(true) } },
+  )
+  if (!res.ok) return jsonResponse({ error: 'Failed to load verifications' }, 500, {}, [], origin)
+  const rows = await res.json().catch(() => [])
+  const list = Array.isArray(rows) ? rows : []
+  const verifications = await Promise.all(list.map((row) => decorateAdminVerification(row, false)))
+  return jsonResponse({ verifications }, 200, {}, [], origin)
+}
+
+const handleAdminVerificationDetail = async (req: Request, url: URL) => {
+  const origin = req.headers.get('origin')
+  const admin = await requireAdmin(req)
+  if (!admin) return jsonResponse({ error: 'Unauthorized' }, 401, {}, [], origin)
+  const id = (url.searchParams.get('id') || '').trim()
+  if (!id) return jsonResponse({ error: 'Missing id' }, 400, {}, [], origin)
+
+  const res = await fetch(
+    `${SUPABASE_URL}/rest/v1/creator_verifications?id=eq.${id}&select=*&limit=1`,
+    { headers: { ...authHeaders(true) } },
+  )
+  if (!res.ok) return jsonResponse({ error: 'Failed to load verification' }, 500, {}, [], origin)
+  const rows = await res.json().catch(() => [])
+  const row = Array.isArray(rows) && rows.length ? rows[0] : null
+  if (!row) return jsonResponse({ error: 'Not found' }, 404, {}, [], origin)
+  return jsonResponse({ verification: await decorateAdminVerification(row, true) }, 200, {}, [], origin)
+}
+
+const handleAdminUpdateVerification = async (req: Request) => {
+  const origin = req.headers.get('origin')
+  const admin = await requireAdmin(req)
+  if (!admin) return jsonResponse({ error: 'Unauthorized' }, 401, {}, [], origin)
+
+  const body = await parseJson(req)
+  const id = typeof body.id === 'string' ? body.id.trim() : ''
+  const action = body.action === 'restore' ? 'restore' : body.action === 'suspend' ? 'suspend' : ''
+  const note = typeof body.note === 'string' ? body.note.trim().slice(0, 500) : ''
+  if (!id || !action) return jsonResponse({ error: 'id and action are required' }, 400, {}, [], origin)
+
+  const res = await fetch(
+    `${SUPABASE_URL}/rest/v1/creator_verifications?id=eq.${id}&select=*&limit=1`,
+    { headers: { ...authHeaders(true) } },
+  )
+  const rows = res.ok ? await res.json().catch(() => []) : []
+  const row = Array.isArray(rows) && rows.length ? rows[0] : null
+  if (!row) return jsonResponse({ error: 'Not found' }, 404, {}, [], origin)
+
+  const now = new Date().toISOString()
+  const nextStatus = action === 'suspend' ? 'suspended' : 'verified'
+  const badgeActive = action === 'restore'
+
+  const upd = await fetch(
+    `${SUPABASE_URL}/rest/v1/creator_verifications?id=eq.${id}`,
+    {
+      method: 'PATCH',
+      headers: { ...authHeaders(true), Prefer: 'return=representation' },
+      body: JSON.stringify({
+        status: nextStatus,
+        admin_note: note,
+        reviewed_at: now,
+        reviewed_by: admin.id,
+        updated_at: now,
+      }),
+    },
+  )
+  if (!upd.ok) return jsonResponse({ error: 'Failed to update verification' }, 500, {}, [], origin)
+  const updatedRows = await upd.json().catch(() => [])
+  const updated = Array.isArray(updatedRows) && updatedRows.length ? updatedRows[0] : null
+
+  const profileUpd = await fetch(
+    `${SUPABASE_URL}/rest/v1/profiles?id=eq.${row.user_id}`,
+    {
+      method: 'PATCH',
+      headers: { ...authHeaders(true) },
+      body: JSON.stringify({
+        is_verified: badgeActive,
+        verification_status: nextStatus,
+        verification_public_id: row.public_id,
+        updated_at: now,
+      }),
+    },
+  )
+  if (!profileUpd.ok) {
+    console.error('Admin profile verification update failed:', await profileUpd.text().catch(() => ''))
+    return jsonResponse({ error: 'Failed to update badge status' }, 500, {}, [], origin)
+  }
+
+  return jsonResponse({
+    verification: await decorateAdminVerification(updated || { ...row, status: nextStatus, admin_note: note, reviewed_at: now }, true),
+  }, 200, {}, [], origin)
+}
 
 serve(async (req) => {
   const response = await routeRequest(req)
@@ -5235,6 +5676,12 @@ const routeRequest = async (req: Request) => {
   if (isRoute('admin/withdrawals/complete') && req.method === 'POST') return handleAdminCompleteWithdrawal(req)
   if (isRoute('admin/payments') && req.method === 'GET') return handleAdminPayments(req)
   if (isRoute('admin/settlements') && req.method === 'GET') return handleAdminSettlements(req)
+  if (isRoute('admin/verifications') && req.method === 'GET') return handleAdminVerifications(req)
+  if (isRoute('admin/verification') && req.method === 'GET') return handleAdminVerificationDetail(req, url)
+  if (isRoute('admin/verifications/update') && req.method === 'POST') return handleAdminUpdateVerification(req)
+  if (isRoute('creator-verification') && req.method === 'GET') return handleGetCreatorVerification(req)
+  if (isRoute('creator-verification/upload-urls') && req.method === 'POST') return handleCreatorVerificationUploadUrls(req)
+  if (isRoute('creator-verification/submit') && req.method === 'POST') return handleSubmitCreatorVerification(req)
   if (isRoute('login') && req.method === 'POST') return handleLogin(req)
   if (isRoute('user-login') && req.method === 'POST') return handleUserLogin(req)
   if (isRoute('user-signup') && req.method === 'POST') return handleUserSignup(req)

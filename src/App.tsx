@@ -4,6 +4,7 @@ import { Header } from "./components/Header";
 import { Hero } from "./components/Hero";
 import { HowItWorks } from "./components/HowItWorks";
 import { CommunityCTA } from "./components/CommunityCTA";
+import { SeoSection } from "./components/SeoSection";
 import { Footer } from "./components/Footer";
 
 import { AuthProvider, RequireAuth, useAuth } from "./lib/useAuth";
@@ -51,6 +52,7 @@ function LandingPage() {
         <Hero />
         <HowItWorks />
         <CommunityCTA />
+        <SeoSection />
       </main>
       <Footer />
     </>
