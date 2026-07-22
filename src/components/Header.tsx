@@ -12,7 +12,7 @@ export function Header() {
     >
       <div className="flex items-center gap-2">
         <Link to="/" className="flex items-center gap-2" aria-label="MalluCupid home">
-          <BrandLogo size="md" />
+          <BrandLogo size="xl" />
         </Link>
       </div>
 
